@@ -4535,6 +4535,7 @@ name = "cursor_tab"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "edit_prediction",
  "edit_prediction_types",
  "futures 0.3.34",
  "gpui",
@@ -4542,9 +4543,15 @@ dependencies = [
  "icons",
  "language",
  "language_model",
+ "log",
+ "lsp",
+ "project",
  "prost",
  "serde_json",
+ "sha2",
+ "time",
  "zed_credentials_provider",
+ "zeta_prompt",
 ]
 
 [[package]]

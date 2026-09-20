@@ -1394,6 +1394,32 @@ async fn test_cursor_popover_edit_prediction_keybind_cases(cx: &mut gpui::TestAp
     }
 }
 
+#[gpui::test]
+async fn test_cursor_popover_keybind_after_typing_at_prediction_start(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx, |_| {});
+    load_default_keymap(cx);
+
+    let mut cx = EditorTestContext::new(cx).await;
+    let provider = cx.new(|_| FakeEditPredictionDelegate::default());
+    assign_editor_completion_provider(provider.clone(), &mut cx);
+    cx.set_state("let x = ˇ;");
+
+    propose_edits(&provider, vec![(8..8, "42")], &mut cx);
+    cx.update_editor(|editor, window, cx| editor.update_visible_edit_prediction(window, cx));
+    cx.update_editor(|editor, window, cx| editor.insert("\n", window, cx));
+
+    cx.update_editor(|editor, window, cx| {
+        assert!(editor.has_active_edit_prediction());
+        editor.edit_prediction_keybind_display(
+            EditPredictionKeybindSurface::CursorPopoverExpanded,
+            window,
+            cx,
+        );
+    });
+}
+
 fn assert_editor_active_edit_completion(
     cx: &mut EditorTestContext,
     assert: impl FnOnce(MultiBufferSnapshot, &Vec<(Range<Anchor>, Arc<str>)>),

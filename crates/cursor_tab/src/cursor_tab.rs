@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Result, anyhow, bail};
+use edit_prediction::EditPredictionStore;
 use edit_prediction_types::{
     EditPrediction, EditPredictionDelegate, EditPredictionDiscardReason, EditPredictionIconSet,
     EditPredictionRequestTrigger, interpolate_edits,
@@ -8,16 +9,21 @@ use gpui::{App, AppContext as _, Context, Entity, Global, SharedString, Task};
 use http_client::HttpClient;
 use icons::IconName;
 use language::{
-    Anchor, Bias, Buffer, BufferSnapshot, EditPreview, PointUtf16, ToPointUtf16, Unclipped,
+    Anchor, Bias, Buffer, BufferSnapshot, EditPreview, Point, PointUtf16, ToPointUtf16, Unclipped,
     language_settings::all_language_settings,
 };
 use language_model::{ApiKeyState, AuthenticateError, EnvVar, env_var};
+use lsp::DiagnosticSeverity;
+use project::Project;
 use prost::Message;
+use sha2::{Digest as _, Sha256};
 use std::{
+    collections::{BTreeMap, HashMap},
     ops::Range,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use time::UtcOffset;
 
 mod request;
 
@@ -254,20 +260,283 @@ impl CurrentCompletion {
 struct CursorTabCompletion {
     text: String,
     range: Option<RangeToReplace>,
+    suggestion_start_line: Option<i32>,
+}
+
+impl CursorTabCompletion {
+    fn replacement<'a>(
+        &'a self,
+        cursor: PointUtf16,
+        current_line_prefix: &str,
+    ) -> Result<(Range<Unclipped<PointUtf16>>, &'a str)> {
+        if !current_line_prefix.is_empty()
+            && let Some(suffix) = self.text.strip_prefix(current_line_prefix)
+        {
+            return Ok((Unclipped(cursor)..Unclipped(cursor), suffix));
+        }
+
+        if let Some(range) = self.range {
+            return Ok((
+                Unclipped(PointUtf16::new(
+                    u32::try_from(range.start_line)?,
+                    u32::try_from(range.start_column)?,
+                ))
+                    ..Unclipped(PointUtf16::new(
+                        u32::try_from(range.end_line)?,
+                        u32::try_from(range.end_column)?,
+                    )),
+                &self.text,
+            ));
+        }
+
+        if let Some(start_row) = self
+            .suggestion_start_line
+            .map(u32::try_from)
+            .transpose()?
+            .filter(|start_row| *start_row <= cursor.row)
+        {
+            return Ok((
+                Unclipped(PointUtf16::new(start_row, 0))..Unclipped(cursor),
+                &self.text,
+            ));
+        }
+
+        Ok((Unclipped(cursor)..Unclipped(cursor), &self.text))
+    }
+}
+
+fn minimize_replacement<'a>(
+    range: Range<PointUtf16>,
+    cursor: PointUtf16,
+    existing_text: &str,
+    replacement_text: &'a str,
+) -> (Range<PointUtf16>, &'a str) {
+    if range.end == cursor
+        && !existing_text.is_empty()
+        && let Some(suffix) = replacement_text.strip_prefix(existing_text)
+    {
+        return (cursor..cursor, suffix);
+    }
+
+    (range, replacement_text)
+}
+
+struct CursorTabRequestContext {
+    file_diff_histories: Vec<FileDiffHistory>,
+    additional_files: Vec<AdditionalFile>,
+    code_results: Vec<CodeResult>,
+}
+
+fn milliseconds_since_epoch(time: SystemTime) -> Option<f64> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs_f64() * 1000.0)
+}
+
+fn sha_256(contents: &str) -> String {
+    format!("{:x}", Sha256::digest(contents.as_bytes()))
+}
+
+fn file_version(snapshot: &BufferSnapshot) -> Option<i32> {
+    snapshot
+        .version()
+        .most_recent()
+        .and_then(|timestamp| i32::try_from(timestamp.value).ok())
+}
+
+fn linter_errors(snapshot: &BufferSnapshot) -> Vec<LinterError> {
+    snapshot
+        .diagnostics_in_range::<_, PointUtf16>(0..snapshot.len(), false)
+        .map(|entry| LinterError {
+            message: entry.diagnostic.message.as_str().to_owned(),
+            range: Some(Selection {
+                start_line: i32::try_from(entry.range.start.row).unwrap_or(i32::MAX),
+                start_column: i32::try_from(entry.range.start.column).unwrap_or(i32::MAX),
+                end_line: i32::try_from(entry.range.end.row).unwrap_or(i32::MAX),
+                end_column: i32::try_from(entry.range.end.column).unwrap_or(i32::MAX),
+            }),
+            source: entry.diagnostic.source.clone(),
+            related_information: Vec::new(),
+            severity: Some(match entry.diagnostic.severity {
+                DiagnosticSeverity::ERROR => 1,
+                DiagnosticSeverity::WARNING => 2,
+                DiagnosticSeverity::INFORMATION => 3,
+                DiagnosticSeverity::HINT => 4,
+                _ => 0,
+            }),
+            is_stale: Some(entry.diagnostic.is_disk_based),
+        })
+        .collect()
+}
+
+fn workspace_id(workspace_root_path: &str) -> Option<String> {
+    (!workspace_root_path.is_empty()).then(|| sha_256(workspace_root_path))
 }
 
 pub struct CursorTabEditPredictionDelegate {
     http_client: Arc<dyn HttpClient>,
+    project: Entity<Project>,
+    edit_prediction_store: Entity<EditPredictionStore>,
     pending_request: Option<Task<Result<()>>>,
     current_completion: Option<CurrentCompletion>,
 }
 
 impl CursorTabEditPredictionDelegate {
-    pub fn new(http_client: Arc<dyn HttpClient>) -> Self {
+    pub fn new(
+        http_client: Arc<dyn HttpClient>,
+        project: Entity<Project>,
+        edit_prediction_store: Entity<EditPredictionStore>,
+    ) -> Self {
         Self {
             http_client,
+            project,
+            edit_prediction_store,
             pending_request: None,
             current_completion: None,
+        }
+    }
+
+    fn request_context(
+        &self,
+        active_buffer: &Entity<Buffer>,
+        cursor_position: Anchor,
+        cx: &mut App,
+    ) -> CursorTabRequestContext {
+        let (events, related_files, recently_opened_files) =
+            self.edit_prediction_store.update(cx, |store, cx| {
+                store.register_buffer(active_buffer, &self.project, cx);
+                store.refresh_context(&self.project, active_buffer, cursor_position, cx);
+                (
+                    store.edit_history_for_project(&self.project, cx),
+                    store.context_for_project_with_buffers(&self.project, cx),
+                    store.recently_opened_files_for_project(&self.project),
+                )
+            });
+
+        let mut histories_by_file: BTreeMap<String, (Vec<String>, Vec<f64>)> = BTreeMap::new();
+        for event in events {
+            let zeta_prompt::Event::BufferChange { path, diff, .. } = event.event.as_ref();
+            let history = histories_by_file
+                .entry(path.to_string_lossy().into_owned())
+                .or_default();
+            history.0.push(diff.clone());
+        }
+        let file_diff_histories = histories_by_file
+            .into_iter()
+            .map(
+                |(file_name, (diff_history, diff_history_timestamps))| FileDiffHistory {
+                    file_name,
+                    diff_history,
+                    diff_history_timestamps,
+                },
+            )
+            .collect();
+
+        let mut additional_files = Vec::new();
+        let mut code_results = Vec::new();
+        let mut additional_file_indexes = HashMap::new();
+        for (related_file, buffer) in related_files {
+            if buffer == *active_buffer {
+                continue;
+            }
+            let path = related_file.path.to_string_lossy().into_owned();
+            let snapshot = buffer.read(cx).snapshot();
+            let mut visible_range_content = Vec::new();
+            let mut start_line_number_one_indexed = Vec::new();
+            let mut visible_ranges = Vec::new();
+
+            for excerpt in related_file.excerpts {
+                let start_row = excerpt.row_range.start.min(snapshot.max_point().row);
+                let end_row = excerpt.row_range.end.min(snapshot.max_point().row);
+                visible_range_content.push(excerpt.text.to_string());
+                start_line_number_one_indexed
+                    .push(i32::try_from(start_row.saturating_add(1)).unwrap_or(i32::MAX));
+                visible_ranges.push(LineRange {
+                    start_line_number: i32::try_from(start_row).unwrap_or(i32::MAX),
+                    end_line_number_inclusive: i32::try_from(end_row).unwrap_or(i32::MAX),
+                });
+                code_results.push(CodeResult {
+                    code_block: Some(CodeBlock {
+                        relative_workspace_path: path.clone(),
+                        range: Some(CodeRange {
+                            start_position: Some(Position {
+                                line: i32::try_from(start_row).unwrap_or(i32::MAX),
+                                column: 0,
+                            }),
+                            end_position: Some(Position {
+                                line: i32::try_from(end_row).unwrap_or(i32::MAX),
+                                column: i32::try_from(snapshot.line_len(end_row))
+                                    .unwrap_or(i32::MAX),
+                            }),
+                        }),
+                        contents: excerpt.text.to_string(),
+                    }),
+                    score: 1.0 / (excerpt.order.saturating_add(1) as f64),
+                });
+            }
+
+            if !visible_range_content.is_empty() {
+                additional_file_indexes.insert(path.clone(), additional_files.len());
+                additional_files.push(AdditionalFile {
+                    relative_workspace_path: path,
+                    is_open: true,
+                    visible_range_content,
+                    last_viewed_at: None,
+                    start_line_number_one_indexed,
+                    visible_ranges,
+                });
+            }
+        }
+
+        let recently_opened_by_path: HashMap<_, _> = recently_opened_files
+            .into_iter()
+            .map(|file| (file.path, file.cursor_position))
+            .collect();
+        for buffer in self.project.read(cx).opened_buffers(cx) {
+            if buffer == *active_buffer {
+                continue;
+            }
+            let snapshot = buffer.read(cx).snapshot();
+            let Some(file) = snapshot.file() else {
+                continue;
+            };
+            let path = file.path().as_std_path();
+            let path_string = path.to_string_lossy().into_owned();
+            if additional_file_indexes.contains_key(&path_string) {
+                continue;
+            }
+            let Some(cursor_offset) = recently_opened_by_path.get(path).copied().flatten() else {
+                continue;
+            };
+            let cursor_row = snapshot
+                .offset_to_point(cursor_offset.min(snapshot.len()))
+                .row;
+            let start_row = cursor_row.saturating_sub(100);
+            let end_row = cursor_row.saturating_add(100).min(snapshot.max_point().row);
+            let content = snapshot
+                .text_for_range(
+                    Point::new(start_row, 0)..Point::new(end_row, snapshot.line_len(end_row)),
+                )
+                .collect();
+            additional_files.push(AdditionalFile {
+                relative_workspace_path: path_string,
+                is_open: true,
+                visible_range_content: vec![content],
+                last_viewed_at: None,
+                start_line_number_one_indexed: vec![
+                    i32::try_from(start_row.saturating_add(1)).unwrap_or(i32::MAX),
+                ],
+                visible_ranges: vec![LineRange {
+                    start_line_number: i32::try_from(start_row).unwrap_or(i32::MAX),
+                    end_line_number_inclusive: i32::try_from(end_row).unwrap_or(i32::MAX),
+                }],
+            });
+        }
+
+        CursorTabRequestContext {
+            file_diff_histories,
+            additional_files,
+            code_results,
         }
     }
 
@@ -309,16 +578,61 @@ impl CursorTabEditPredictionDelegate {
         let mut completion = CursorTabCompletion {
             text: String::new(),
             range: None,
+            suggestion_start_line: None,
         };
         for frame in decoder.push(&body)? {
             match frame {
                 ConnectFrame::Message(message) => {
+                    let range = message.range_to_replace.map(|range| {
+                        (
+                            range.start_line,
+                            range.start_column,
+                            range.end_line,
+                            range.end_column,
+                        )
+                    });
+                    let cursor_target = message.cursor_prediction_target.as_ref().map(|target| {
+                        (
+                            target.relative_path.as_str(),
+                            target.line_number_one_indexed,
+                            target.expected_content.as_str(),
+                            target.should_retrigger_cpp,
+                        )
+                    });
+                    let model_info = message.model_info.map(|model| {
+                        (
+                            model.is_fused_cursor_prediction_model,
+                            model.is_multidiff_model,
+                        )
+                    });
+                    log::debug!(
+                        "Cursor Tab response frame: text={:?}, suggestion_start_line={:?}, range={:?}, begin_edit={:?}, done_edit={:?}, done_stream={:?}, should_remove_leading_eol={:?}, binding_id={:?}, cursor_target={:?}, model_info={:?}",
+                        message.text,
+                        message.suggestion_start_line,
+                        range,
+                        message.begin_edit,
+                        message.done_edit,
+                        message.done_stream,
+                        message.should_remove_leading_eol,
+                        message.binding_id,
+                        cursor_target,
+                        model_info,
+                    );
                     completion.text.push_str(&message.text);
-                    if let Some(range) = message.range_to_replace {
-                        completion.range = Some(range);
+                    if let Some((start_line, start_column, end_line, end_column)) = range {
+                        completion.range = Some(RangeToReplace {
+                            start_line,
+                            start_column,
+                            end_line,
+                            end_column,
+                        });
+                    }
+                    if let Some(start_line) = message.suggestion_start_line {
+                        completion.suggestion_start_line = Some(start_line);
                     }
                 }
                 ConnectFrame::EndStream(trailer) => {
+                    log::debug!("Cursor Tab response trailer: {trailer}");
                     if let Some(error) = trailer.get("error") {
                         bail!("Cursor Tab stream error: {error}");
                     }
@@ -326,6 +640,17 @@ impl CursorTabEditPredictionDelegate {
             }
         }
         decoder.finish()?;
+        log::debug!(
+            "Cursor Tab accumulated completion: text={:?}, suggestion_start_line={:?}, range={:?}",
+            completion.text,
+            completion.suggestion_start_line,
+            completion.range.map(|range| (
+                range.start_line,
+                range.start_column,
+                range.end_line,
+                range.end_column,
+            )),
+        );
         Ok(completion)
     }
 }
@@ -345,6 +670,10 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
 
     fn show_tab_accept_marker() -> bool {
         true
+    }
+
+    fn supports_jump_to_edit() -> bool {
+        false
     }
 
     fn icons(&self, _cx: &App) -> EditPredictionIconSet {
@@ -443,6 +772,7 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     sha_256_hash: None,
                     linter_errors: Vec::new(),
                     file_diff_histories: Vec::new(),
+                    merged_diff_histories: Vec::new(),
                     additional_files: Vec::new(),
                     code_results: Vec::new(),
                     model_name: Some(model),
@@ -471,27 +801,25 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     return Ok(None);
                 }
 
-                let edit_range = if let Some(range) = completion.range {
-                    let start = snapshot.clip_point_utf16(
-                        Unclipped(PointUtf16::new(
-                            u32::try_from(range.start_line)?,
-                            u32::try_from(range.start_column)?,
-                        )),
-                        Bias::Left,
-                    );
-                    let end = snapshot.clip_point_utf16(
-                        Unclipped(PointUtf16::new(
-                            u32::try_from(range.end_line)?,
-                            u32::try_from(range.end_column)?,
-                        )),
-                        Bias::Right,
-                    );
-                    snapshot.anchor_before(start)..snapshot.anchor_after(end)
-                } else {
-                    cursor_position..cursor_position
-                };
+                let current_line_prefix = snapshot
+                    .text_for_range(PointUtf16::new(cursor.row, 0)..cursor)
+                    .collect::<String>();
+                let (replacement_range, replacement_text) =
+                    completion.replacement(cursor, &current_line_prefix)?;
+                let start = snapshot.clip_point_utf16(replacement_range.start, Bias::Left);
+                let end = snapshot.clip_point_utf16(replacement_range.end, Bias::Right);
+                let existing_text = snapshot.text_for_range(start..end).collect::<String>();
+                let unminimized_range = start..end;
+                let unminimized_text = replacement_text;
+                let (replacement_range, replacement_text) =
+                    minimize_replacement(unminimized_range.clone(), cursor, &existing_text, replacement_text);
+                log::debug!(
+                    "Cursor Tab normalized completion: cursor={cursor:?}, current_line_prefix={current_line_prefix:?}, existing_text={existing_text:?}, initial_range={unminimized_range:?}, initial_text={unminimized_text:?}, final_range={replacement_range:?}, final_text={replacement_text:?}"
+                );
+                let edit_range = snapshot.anchor_before(replacement_range.start)
+                    ..snapshot.anchor_after(replacement_range.end);
                 let edits: Arc<[(Range<Anchor>, Arc<str>)]> =
-                    Arc::from([(edit_range, Arc::from(completion.text))]);
+                    Arc::from([(edit_range, Arc::from(replacement_text))]);
                 let edit_preview = buffer
                     .read_with(cx, |buffer, cx| buffer.preview_edits(edits.clone(), cx))
                     .await;
@@ -620,5 +948,132 @@ mod tests {
     fn accepts_raw_and_prefixed_bearer_tokens() {
         assert_eq!(authorization_header_value("jwt"), "Bearer jwt");
         assert_eq!(authorization_header_value(" bearer jwt "), "bearer jwt");
+    }
+
+    #[test]
+    fn legacy_completion_replaces_from_suggestion_start_line_to_cursor() -> Result<()> {
+        let completion = CursorTabCompletion {
+            text: "console.log(\"hello world\")".into(),
+            range: None,
+            suggestion_start_line: Some(3),
+        };
+
+        let (range, text) = completion.replacement(PointUtf16::new(3, 11), "different prefix")?;
+
+        assert_eq!(range.start.0, PointUtf16::new(3, 0));
+        assert_eq!(range.end.0, PointUtf16::new(3, 11));
+        assert_eq!(text, "console.log(\"hello world\")");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_completion_range_takes_precedence() -> Result<()> {
+        let completion = CursorTabCompletion {
+            text: "replacement".into(),
+            range: Some(RangeToReplace {
+                start_line: 1,
+                start_column: 2,
+                end_line: 4,
+                end_column: 5,
+            }),
+            suggestion_start_line: Some(3),
+        };
+
+        let (range, text) = completion.replacement(PointUtf16::new(3, 11), "ignored")?;
+
+        assert_eq!(range.start.0, PointUtf16::new(1, 2));
+        assert_eq!(range.end.0, PointUtf16::new(4, 5));
+        assert_eq!(text, "replacement");
+        Ok(())
+    }
+
+    #[test]
+    fn full_line_completion_without_range_inserts_only_unmatched_suffix() -> Result<()> {
+        let completion = CursorTabCompletion {
+            text: "console.log(\"hello world\");".into(),
+            range: None,
+            suggestion_start_line: None,
+        };
+
+        let cursor = PointUtf16::new(3, 10);
+        let (range, text) = completion.replacement(cursor, "console.lo")?;
+
+        assert_eq!(range.start.0, cursor);
+        assert_eq!(range.end.0, cursor);
+        assert_eq!(text, "g(\"hello world\");");
+        Ok(())
+    }
+
+    #[test]
+    fn suffix_completion_without_range_is_inserted_at_cursor() -> Result<()> {
+        let completion = CursorTabCompletion {
+            text: "g(\"hello world\");".into(),
+            range: None,
+            suggestion_start_line: None,
+        };
+
+        let cursor = PointUtf16::new(3, 10);
+        let (range, text) = completion.replacement(cursor, "console.lo")?;
+
+        assert_eq!(range.start.0, cursor);
+        assert_eq!(range.end.0, cursor);
+        assert_eq!(text, "g(\"hello world\");");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_replacement_of_typed_prefix_is_minimized_to_suffix_insertion() {
+        let cursor = PointUtf16::new(3, 10);
+        let (range, text) = minimize_replacement(
+            PointUtf16::new(3, 0)..cursor,
+            cursor,
+            "console.lo",
+            "console.log(\"hello world\");",
+        );
+
+        assert_eq!(range, cursor..cursor);
+        assert_eq!(text, "g(\"hello world\");");
+    }
+
+    #[test]
+    fn typed_prefix_takes_precedence_over_reversed_explicit_range() -> Result<()> {
+        let completion = CursorTabCompletion {
+            text: "console.log(\"Hello World\");".into(),
+            range: Some(RangeToReplace {
+                start_line: 0,
+                start_column: 8,
+                end_line: 0,
+                end_column: 0,
+            }),
+            suggestion_start_line: None,
+        };
+        let cursor = PointUtf16::new(0, 8);
+
+        let (range, text) = completion.replacement(cursor, "console.")?;
+
+        assert_eq!(range.start.0, cursor);
+        assert_eq!(range.end.0, cursor);
+        assert_eq!(text, "log(\"Hello World\");");
+        Ok(())
+    }
+
+    #[test]
+    fn replacement_past_cursor_is_not_minimized() {
+        let cursor = PointUtf16::new(3, 10);
+        let range = PointUtf16::new(3, 0)..PointUtf16::new(3, 12);
+        let (minimized_range, text) = minimize_replacement(
+            range.clone(),
+            cursor,
+            "console.load",
+            "console.log(\"hello world\");",
+        );
+
+        assert_eq!(minimized_range, range);
+        assert_eq!(text, "console.log(\"hello world\");");
+    }
+
+    #[test]
+    fn cursor_tab_does_not_jump_to_distant_edits() {
+        assert!(!CursorTabEditPredictionDelegate::supports_jump_to_edit());
     }
 }

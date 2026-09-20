@@ -1516,7 +1516,7 @@ impl Editor {
                         .chars()
                         .filter(|character| *character == '\n')
                         .count() as u32;
-                    let deleted_newline_count = old_end_row - edit_start_row;
+                    let deleted_newline_count = old_end_row.saturating_sub(edit_start_row);
                     let preview_end_row = edit_start_row + inserted_newline_count;
 
                     start_row =

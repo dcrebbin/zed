@@ -262,7 +262,23 @@ fn assign_edit_prediction_provider(
         }
         Some(EditPredictionProviderConfig::CursorTab) => {
             load_cursor_tab_bearer_token(cx).detach();
-            let provider = cx.new(|_| CursorTabEditPredictionDelegate::new(client.http_client()));
+            let Some(project) = editor.project().cloned() else {
+                return;
+            };
+            let store = edit_prediction::EditPredictionStore::global(client, &user_store, cx);
+            store.update(cx, |store, cx| {
+                store.register_project(&project, cx);
+                if let Some(buffer) = &singleton_buffer {
+                    store.register_buffer(buffer, &project, cx);
+                }
+            });
+            let provider = cx.new(|_| {
+                CursorTabEditPredictionDelegate::new(
+                    client.http_client(),
+                    project,
+                    store,
+                )
+            });
             editor.set_edit_prediction_provider(Some(provider), trigger, window, cx);
         }
         Some(EditPredictionProviderConfig::Zed(model)) => {

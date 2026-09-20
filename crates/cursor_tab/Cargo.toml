@@ -10,6 +10,7 @@ path = "src/cursor_tab.rs"
 
 [dependencies]
 anyhow.workspace = true
+edit_prediction.workspace = true
 edit_prediction_types.workspace = true
 futures.workspace = true
 gpui.workspace = true
@@ -17,6 +18,12 @@ http_client.workspace = true
 icons.workspace = true
 language.workspace = true
 language_model.workspace = true
+log.workspace = true
+lsp.workspace = true
+project.workspace = true
 prost.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+time.workspace = true
+zeta_prompt.workspace = true
 zed_credentials_provider.workspace = true
