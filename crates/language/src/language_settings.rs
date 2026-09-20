@@ -604,6 +604,10 @@ pub struct CursorTabSettings {
     pub model: String,
     /// Cursor client version sent with completion requests.
     pub client_version: String,
+    /// Request ID sent with Cursor Tab completion requests.
+    pub request_id: String,
+    /// Session ID sent with Cursor Tab completion requests.
+    pub session_id: String,
     /// Automatic prediction debounce delay.
     pub prediction_debounce: DelayMs,
 }
@@ -959,6 +963,8 @@ impl settings::Settings for AllLanguageSettings {
             api_url: cursor_tab.api_url.unwrap().into(),
             model: cursor_tab.model.unwrap(),
             client_version: cursor_tab.client_version.unwrap(),
+            request_id: cursor_tab.request_id.unwrap(),
+            session_id: cursor_tab.session_id.unwrap(),
             prediction_debounce: cursor_tab.prediction_debounce.unwrap(),
         };
 

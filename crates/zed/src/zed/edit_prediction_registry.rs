@@ -2,6 +2,7 @@ use client::{Client, UserStore};
 use codestral::{CodestralEditPredictionDelegate, load_codestral_api_key};
 use collections::HashMap;
 use copilot::CopilotEditPredictionDelegate;
+use cursor_tab::{CursorTabEditPredictionDelegate, load_cursor_tab_bearer_token};
 use edit_prediction::{EditPredictionModel, ZedEditPredictionDelegate, fim};
 use editor::{EditPredictionRequestTrigger, Editor};
 use gpui::{AnyWindowHandle, App, AppContext as _, Context, Entity, WeakEntity};
@@ -85,6 +86,9 @@ pub fn init(client: Arc<Client>, user_store: Entity<UserStore>, cx: &mut App) {
         let mut previous_config = edit_prediction_provider_config_for_settings(cx);
         move |cx| {
             let new_provider_config = edit_prediction_provider_config_for_settings(cx);
+            if new_provider_config == Some(EditPredictionProviderConfig::CursorTab) {
+                load_cursor_tab_bearer_token(cx).detach();
+            }
 
             if new_provider_config != previous_config {
                 telemetry::event!(
@@ -118,7 +122,7 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
             Some(EditPredictionProviderConfig::Zed(EditPredictionModel::Zeta))
         }
         EditPredictionProvider::Codestral => Some(EditPredictionProviderConfig::Codestral),
-        EditPredictionProvider::CursorTab => None,
+        EditPredictionProvider::CursorTab => Some(EditPredictionProviderConfig::CursorTab),
         EditPredictionProvider::Ollama | EditPredictionProvider::OpenAiCompatibleApi => {
             let custom_settings = if provider == EditPredictionProvider::Ollama {
                 settings.ollama.as_ref()?
@@ -159,6 +163,7 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
 enum EditPredictionProviderConfig {
     Copilot,
     Codestral,
+    CursorTab,
     Zed(EditPredictionModel),
 }
 
@@ -167,6 +172,7 @@ impl EditPredictionProviderConfig {
         match self {
             EditPredictionProviderConfig::Copilot => "Copilot",
             EditPredictionProviderConfig::Codestral => "Codestral",
+            EditPredictionProviderConfig::CursorTab => "Cursor Tab",
             EditPredictionProviderConfig::Zed(model) => match model {
                 EditPredictionModel::Zeta => "Zeta",
                 EditPredictionModel::Fim { .. } => "FIM",
@@ -193,6 +199,8 @@ fn assign_edit_prediction_providers(
 ) {
     if provider_config == Some(EditPredictionProviderConfig::Codestral) {
         load_codestral_api_key(cx).detach();
+    } else if provider_config == Some(EditPredictionProviderConfig::CursorTab) {
+        load_cursor_tab_bearer_token(cx).detach();
     }
     for (editor, window) in editors.borrow().iter() {
         _ = window.update(cx, |_window, window, cx| {
@@ -250,6 +258,11 @@ fn assign_edit_prediction_provider(
         Some(EditPredictionProviderConfig::Codestral) => {
             let http_client = client.http_client();
             let provider = cx.new(|_| CodestralEditPredictionDelegate::new(http_client));
+            editor.set_edit_prediction_provider(Some(provider), trigger, window, cx);
+        }
+        Some(EditPredictionProviderConfig::CursorTab) => {
+            load_cursor_tab_bearer_token(cx).detach();
+            let provider = cx.new(|_| CursorTabEditPredictionDelegate::new(client.http_client()));
             editor.set_edit_prediction_provider(Some(provider), trigger, window, cx);
         }
         Some(EditPredictionProviderConfig::Zed(model)) => {

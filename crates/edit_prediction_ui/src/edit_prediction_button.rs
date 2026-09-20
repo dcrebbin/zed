@@ -293,6 +293,59 @@ impl Render for EditPredictionButton {
                         .with_handle(self.popover_menu_handle.clone()),
                 )
             }
+            EditPredictionProvider::CursorTab => {
+                let enabled = self.editor_enabled.unwrap_or(true);
+                let this = cx.weak_entity();
+
+                div().child(
+                    PopoverMenu::new("cursor-tab")
+                        .menu(move |window, cx| {
+                            this.update(cx, |this, cx| {
+                                this.build_edit_prediction_context_menu(
+                                    EditPredictionProvider::CursorTab,
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .ok()
+                        })
+                        .anchor(Anchor::BottomRight)
+                        .trigger_with_tooltip(
+                            IconButton::new("cursor-tab-icon", IconName::EditorCursor)
+                                .shape(IconButtonShape::Square)
+                                .tab_index(0isize)
+                                .aria_label("Cursor Tab Edit Prediction")
+                                .when(!enabled, |this| {
+                                    this.indicator(Indicator::dot().color(Color::Ignored))
+                                        .indicator_border_color(Some(
+                                            cx.theme().colors().status_bar_background,
+                                        ))
+                                }),
+                            move |_window, cx| {
+                                let settings =
+                                    &all_language_settings(None, cx).edit_predictions.cursor_tab;
+                                let tooltip_meta =
+                                    if cursor_tab::cursor_tab_bearer_token(cx).is_none() {
+                                        "Cursor bearer token not configured"
+                                    } else if settings.client_version.trim().is_empty()
+                                        || settings.request_id.trim().is_empty()
+                                        || settings.session_id.trim().is_empty()
+                                    {
+                                        "Cursor request headers not configured"
+                                    } else {
+                                        "Powered by Cursor Tab"
+                                    };
+                                Tooltip::with_meta(
+                                    "Edit Prediction",
+                                    Some(&ToggleMenu),
+                                    tooltip_meta,
+                                    cx,
+                                )
+                            },
+                        )
+                        .with_handle(self.popover_menu_handle.clone()),
+                )
+            }
             EditPredictionProvider::Ollama => {
                 let enabled = self.editor_enabled.unwrap_or(true);
                 let this = cx.weak_entity();
@@ -533,7 +586,7 @@ impl Render for EditPredictionButton {
                 div().child(popover_menu.into_any_element())
             }
 
-            EditPredictionProvider::None | EditPredictionProvider::CursorTab => div().hidden(),
+            EditPredictionProvider::None => div().hidden(),
         }
     }
 }
@@ -1489,6 +1542,7 @@ pub fn get_available_providers(cx: &mut App) -> Vec<EditPredictionProvider> {
     let mut providers = Vec::new();
 
     providers.push(EditPredictionProvider::Zed);
+    providers.push(EditPredictionProvider::CursorTab);
 
     let app_state = workspace::AppState::global(cx);
     if copilot::GlobalCopilotAuth::try_get_or_init(app_state, cx)

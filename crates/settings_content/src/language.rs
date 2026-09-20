@@ -286,6 +286,14 @@ pub struct CursorTabSettingsContent {
     ///
     /// Default: ""
     pub client_version: Option<String>,
+    /// Request ID sent with Cursor Tab completion requests.
+    ///
+    /// Default: ""
+    pub request_id: Option<String>,
+    /// Session ID sent with Cursor Tab completion requests.
+    ///
+    /// Default: ""
+    pub session_id: Option<String>,
     /// The debounce delay in milliseconds before automatically requesting a prediction
     /// after typing stops. Set to 0 to request predictions immediately.
     ///

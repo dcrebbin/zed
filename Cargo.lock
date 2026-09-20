@@ -4535,8 +4535,16 @@ name = "cursor_tab"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "edit_prediction_types",
+ "futures 0.3.34",
+ "gpui",
+ "http_client",
+ "icons",
+ "language",
+ "language_model",
  "prost",
  "serde_json",
+ "zed_credentials_provider",
 ]
 
 [[package]]
@@ -5539,6 +5547,7 @@ dependencies = [
  "copilot",
  "copilot_chat",
  "copilot_ui",
+ "cursor_tab",
  "edit_prediction",
  "edit_prediction_types",
  "editor",
@@ -22834,6 +22843,7 @@ dependencies = [
  "copilot_chat",
  "copilot_ui",
  "crashes",
+ "cursor_tab",
  "dap_adapters",
  "db",
  "debug_adapter_extension",

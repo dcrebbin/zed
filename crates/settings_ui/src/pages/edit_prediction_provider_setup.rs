@@ -1,5 +1,7 @@
 use codestral::{CODESTRAL_API_URL, codestral_api_key_state, codestral_api_url};
-use cursor_tab::{CURSOR_TAB_API_URL, CURSOR_TAB_MODEL};
+use cursor_tab::{
+    CURSOR_TAB_API_URL, CURSOR_TAB_MODEL, cursor_tab_api_url, cursor_tab_bearer_token_state,
+};
 use edit_prediction::{
     ApiKeyState,
     mercury::{MERCURY_CREDENTIALS_URL, mercury_api_token},
@@ -43,6 +45,7 @@ pub(crate) fn render_edit_prediction_setup_page(
                 ApiKeyDocs::Link {
                     dashboard_url: "https://platform.inceptionlabs.ai/dashboard/api-keys".into(),
                 },
+                CredentialKind::ApiKey,
                 mercury_api_token(cx),
                 |_cx| MERCURY_CREDENTIALS_URL,
                 Some(
@@ -67,6 +70,7 @@ pub(crate) fn render_edit_prediction_setup_page(
                 ApiKeyDocs::Link {
                     dashboard_url: "https://console.mistral.ai/codestral".into(),
                 },
+                CredentialKind::ApiKey,
                 codestral_api_key_state(cx),
                 |cx| codestral_api_url(cx),
                 Some(
@@ -92,6 +96,7 @@ pub(crate) fn render_edit_prediction_setup_page(
                 ApiKeyDocs::Custom {
                     message: "The API key sent as Authorization: Bearer {key}.".into(),
                 },
+                CredentialKind::ApiKey,
                 open_ai_compatible_api_token(cx),
                 |cx| open_ai_compatible_api_url(cx),
                 Some(
@@ -190,12 +195,35 @@ enum ApiKeyDocs {
     Custom { message: SharedString },
 }
 
+#[derive(Clone, Copy)]
+enum CredentialKind {
+    ApiKey,
+    BearerToken,
+}
+
+impl CredentialKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ApiKey => "API Key",
+            Self::BearerToken => "Bearer Token",
+        }
+    }
+
+    fn reset_label(self) -> &'static str {
+        match self {
+            Self::ApiKey => "Reset Key",
+            Self::BearerToken => "Reset Token",
+        }
+    }
+}
+
 fn render_api_key_provider(
     icon: IconName,
     title: &'static str,
     docs: ApiKeyDocs,
+    credential_kind: CredentialKind,
     api_key_state: Entity<ApiKeyState>,
-    current_url: fn(&mut App) -> SharedString,
+    current_url: fn(&App) -> SharedString,
     additional_fields: Option<AnyElement>,
     window: &mut Window,
     cx: &mut Context<SettingsWindow>,
@@ -281,15 +309,15 @@ fn render_api_key_provider(
     };
 
     let configured_card_label = if is_from_env_var {
-        "API Key Set in Environment Variable"
+        format!("{} Set in Environment Variable", credential_kind.name())
     } else {
-        "API Key Configured"
+        format!("{} Configured", credential_kind.name())
     };
 
     let container = if has_key {
         base_container.child(header).child(
             ConfiguredApiCard::new(format!("{title}-reset-key"), configured_card_label)
-                .button_label("Reset Key")
+                .button_label(credential_kind.reset_label())
                 .button_tab_index(0)
                 .disabled(is_from_env_var)
                 .when_some(env_var_name, |this, env_var_name| {
@@ -317,7 +345,7 @@ fn render_api_key_provider(
                         .min_w_0()
                         .max_w_1_2()
                         .gap_0p5()
-                        .child(Label::new("API Key"))
+                        .child(Label::new(credential_kind.name()))
                         .child(description)
                         .when_some(env_var_name, |this, env_var_name| {
                             this.child({
@@ -333,7 +361,7 @@ fn render_api_key_provider(
                     SettingsInputField::new(format!("{}-api-key-input", title))
                         .tab_index(0)
                         .with_placeholder("xxxxxxxxxxxxxxxxxxxx")
-                        .aria_label(format!("{} API Key", title))
+                        .aria_label(format!("{} {}", title, credential_kind.name()))
                         .on_confirm(move |api_key, _window, cx| {
                             write_key(api_key.filter(|key| !key.is_empty()), cx);
                         }),
@@ -945,6 +973,68 @@ fn cursor_tab_settings() -> Box<[SettingsPageItem]> {
             files: USER,
         }),
         SettingsPageItem::SettingItem(SettingItem {
+            title: "Request ID",
+            description: "The x-request-id header sent with Cursor Tab completion requests.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                pick: |settings| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .as_ref()?
+                        .cursor_tab
+                        .as_ref()?
+                        .request_id
+                        .as_ref()
+                },
+                write: |settings, value, _app: &App| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .get_or_insert_default()
+                        .cursor_tab
+                        .get_or_insert_default()
+                        .request_id = value;
+                },
+                json_path: Some("edit_predictions.cursor_tab.request_id"),
+            }),
+            metadata: None,
+            files: USER,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "Session ID",
+            description: "The x-session-id header sent with Cursor Tab completion requests.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                pick: |settings| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .as_ref()?
+                        .cursor_tab
+                        .as_ref()?
+                        .session_id
+                        .as_ref()
+                },
+                write: |settings, value, _app: &App| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .get_or_insert_default()
+                        .cursor_tab
+                        .get_or_insert_default()
+                        .session_id = value;
+                },
+                json_path: Some("edit_predictions.cursor_tab.session_id"),
+            }),
+            metadata: None,
+            files: USER,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
             title: "Prediction Debounce",
             description: "Delay in milliseconds before automatically requesting a prediction after typing stops. Set to 0 to request predictions immediately.",
             field: Box::new(SettingField {
@@ -988,17 +1078,19 @@ fn render_cursor_tab_provider(
         .render_sub_page_items_section(settings.iter().enumerate(), true, window, cx)
         .into_any_element();
 
-    v_flex()
-        .id("cursor-tab")
-        .min_w_0()
-        .pt_8()
-        .gap_1p5()
-        .child(
-            SettingsSectionHeader::new("Cursor Tab")
-                .icon(IconName::CursorIBeam)
-                .no_padding(true),
-        )
-        .child(div().px_neg_8().child(fields))
+    render_api_key_provider(
+        IconName::EditorCursor,
+        "Cursor Tab",
+        ApiKeyDocs::Custom {
+            message: "The bearer token copied from a Cursor StreamCpp request.".into(),
+        },
+        CredentialKind::BearerToken,
+        cursor_tab_bearer_token_state(cx),
+        cursor_tab_api_url,
+        Some(fields),
+        window,
+        cx,
+    )
 }
 
 fn mercury_settings() -> Box<[SettingsPageItem]> {
