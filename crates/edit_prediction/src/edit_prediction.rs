@@ -118,7 +118,7 @@ actions!(
 );
 
 /// Maximum number of events to track.
-const EVENT_COUNT_MAX: usize = 10;
+const EVENT_COUNT_MAX: usize = 24;
 const RECENT_PATH_COUNT_MAX: usize = 20;
 const CHANGE_GROUPING_LINE_SPAN: u32 = 8;
 const EDIT_HISTORY_DIFF_SIZE_LIMIT: usize = 2048 * 3; // ~2048 tokens or ~50% of typical prompt budget
@@ -486,7 +486,7 @@ impl ProjectState {
         let Some(event) = event else {
             return;
         };
-        if self.events.len() + 1 >= EVENT_COUNT_MAX {
+        if self.events.len() >= EVENT_COUNT_MAX {
             self.events.pop_front();
         }
         self.events.push_back(event);

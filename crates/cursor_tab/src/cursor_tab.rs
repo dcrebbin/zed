@@ -146,9 +146,9 @@ pub struct RangeToReplace {
     #[prost(int32, tag = "1")]
     pub start_line: i32,
     #[prost(int32, tag = "2")]
-    pub start_column: i32,
-    #[prost(int32, tag = "3")]
     pub end_line: i32,
+    #[prost(int32, tag = "3")]
+    pub start_column: i32,
     #[prost(int32, tag = "4")]
     pub end_column: i32,
 }
@@ -295,25 +295,36 @@ impl CursorTabCompletion {
         cursor: PointUtf16,
         current_line_prefix: &str,
     ) -> Result<(Range<Unclipped<PointUtf16>>, &'a str)> {
+        if let Some(range) = self.range {
+            let (start_row, end_row) = if range.start_line > 0 && range.end_line >= range.start_line
+            {
+                (
+                    u32::try_from(range.start_line - 1)?,
+                    u32::try_from(range.end_line)?,
+                )
+            } else {
+                (
+                    u32::try_from(range.start_line)?,
+                    u32::try_from(range.end_line)?,
+                )
+            };
+            let start = PointUtf16::new(start_row, u32::try_from(range.start_column)?);
+            let end = PointUtf16::new(end_row, u32::try_from(range.end_column)?);
+            if end < start {
+                if !current_line_prefix.is_empty()
+                    && let Some(suffix) = self.text.strip_prefix(current_line_prefix)
+                {
+                    return Ok((Unclipped(cursor)..Unclipped(cursor), suffix));
+                }
+                return Ok((Unclipped(cursor)..Unclipped(cursor), &self.text));
+            }
+            return Ok((Unclipped(start)..Unclipped(end), &self.text));
+        }
+
         if !current_line_prefix.is_empty()
             && let Some(suffix) = self.text.strip_prefix(current_line_prefix)
         {
             return Ok((Unclipped(cursor)..Unclipped(cursor), suffix));
-        }
-
-        if let Some(range) = self.range {
-            let start = PointUtf16::new(
-                u32::try_from(range.start_line)?,
-                u32::try_from(range.start_column)?,
-            );
-            let end = PointUtf16::new(
-                u32::try_from(range.end_line)?,
-                u32::try_from(range.end_column)?,
-            );
-            if end < start {
-                return Ok((Unclipped(cursor)..Unclipped(cursor), &self.text));
-            }
-            return Ok((Unclipped(start)..Unclipped(end), &self.text));
         }
 
         if let Some(start_row) = self
@@ -360,6 +371,10 @@ fn repeats_current_line(replacement_text: &str, current_line_prefix: &str) -> bo
         return false;
     };
     first_line == current_line_prefix && lines.all(|line| line == current_line_prefix)
+}
+
+fn contains_only_line_breaks_and_indentation(text: &str) -> bool {
+    (text.contains('\n') || text.contains('\r')) && text.chars().all(char::is_whitespace)
 }
 
 struct CursorTabRequestContext {
@@ -627,8 +642,8 @@ impl CursorTabEditPredictionDelegate {
                     let range = message.range_to_replace.map(|range| {
                         (
                             range.start_line,
-                            range.start_column,
                             range.end_line,
+                            range.start_column,
                             range.end_column,
                         )
                     });
@@ -660,11 +675,11 @@ impl CursorTabEditPredictionDelegate {
                         model_info,
                     );
                     completion.text.push_str(&message.text);
-                    if let Some((start_line, start_column, end_line, end_column)) = range {
+                    if let Some((start_line, end_line, start_column, end_column)) = range {
                         completion.range = Some(RangeToReplace {
                             start_line,
-                            start_column,
                             end_line,
+                            start_column,
                             end_column,
                         });
                     }
@@ -687,8 +702,8 @@ impl CursorTabEditPredictionDelegate {
             completion.suggestion_start_line,
             completion.range.map(|range| (
                 range.start_line,
-                range.start_column,
                 range.end_line,
+                range.start_column,
                 range.end_column,
             )),
         );
@@ -766,6 +781,14 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
             "Cursor Tab request context: file_diff_histories={}",
             file_diff_histories.len()
         );
+        for history in &file_diff_histories {
+            log::debug!(
+                "Cursor Tab file diff history: file={:?}, edits={}, latest={:?}",
+                history.file_name,
+                history.diff_history.len(),
+                history.diff_history.last()
+            );
+        }
         let (relative_workspace_path, workspace_root_path, language_id) = {
             let buffer = buffer.read(cx);
             let relative_workspace_path = buffer
@@ -812,6 +835,15 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     .context("system clock is before the Unix epoch")?
                     .as_millis() as f64;
                 let contents = snapshot.text();
+                let client_timezone_offset = UtcOffset::current_local_offset()
+                    .ok()
+                    .map(|offset| -f64::from(offset.whole_minutes()));
+                log::debug!(
+                    "Cursor Tab current file: path={relative_workspace_path:?}, language={language_id:?}, cursor={cursor:?}, bytes={}, lines={}, version={:?}",
+                    contents.len(),
+                    contents.lines().count(),
+                    file_version(&snapshot)
+                );
                 let request = StreamCppRequestInput {
                     relative_workspace_path,
                     workspace_root_path,
@@ -830,12 +862,12 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     additional_files: Vec::new(),
                     code_results: Vec::new(),
                     model_name: Some(model),
-                    intent_source: Some("line_change".to_string()),
+                    intent_source: Some("typing".to_string()),
                     workspace_id: None,
                     client_time: now,
                     time_since_request_start: started_at.elapsed().as_millis() as f64,
                     time_at_request_send: now,
-                    client_timezone_offset: None,
+                    client_timezone_offset,
                     supports_cpt: false,
                     supports_crlf_cpt: false,
                 }
@@ -876,6 +908,9 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                 if replacement_range.is_empty() && replacement_text.is_empty() {
                     return Ok(None);
                 }
+                if contains_only_line_breaks_and_indentation(replacement_text) {
+                    return Ok(None);
+                }
                 if repeats_current_line(replacement_text, &current_line_prefix) {
                     return Ok(None);
                 }
@@ -903,7 +938,20 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
             this.update(cx, |this, cx| {
                 this.pending_request = None;
                 if let Ok(Some(completion)) = &result {
+                    log::debug!(
+                        "Cursor Tab storing completion: edits={}, text={:?}",
+                        completion.edits.len(),
+                        completion
+                            .edits
+                            .iter()
+                            .map(|(_, text)| text.as_ref())
+                            .collect::<Vec<_>>()
+                    );
                     this.current_completion = Some(completion.clone());
+                } else if let Err(error) = &result {
+                    log::debug!("Cursor Tab did not store completion: error={error:#}");
+                } else {
+                    log::debug!("Cursor Tab did not store completion: empty result");
                 }
                 cx.notify();
             })?;
@@ -927,8 +975,22 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
         _cursor_position: Anchor,
         cx: &mut Context<Self>,
     ) -> Option<EditPrediction> {
-        let completion = self.current_completion.as_ref()?;
-        let edits = completion.interpolate(&buffer.read(cx).snapshot())?;
+        let Some(completion) = self.current_completion.as_ref() else {
+            log::debug!("Cursor Tab suggest: no stored completion");
+            return None;
+        };
+        let Some(edits) = completion.interpolate(&buffer.read(cx).snapshot()) else {
+            log::debug!("Cursor Tab suggest: completion did not interpolate into live buffer");
+            return None;
+        };
+        log::debug!(
+            "Cursor Tab suggest: edits={}, text={:?}",
+            edits.len(),
+            edits
+                .iter()
+                .map(|(_, text)| text.as_ref())
+                .collect::<Vec<_>>()
+        );
         Some(EditPrediction::Local {
             id: None,
             edits,
@@ -1050,9 +1112,51 @@ mod tests {
 
         let (range, text) = completion.replacement(PointUtf16::new(3, 11), "ignored")?;
 
-        assert_eq!(range.start.0, PointUtf16::new(1, 2));
+        assert_eq!(range.start.0, PointUtf16::new(0, 2));
         assert_eq!(range.end.0, PointUtf16::new(4, 5));
         assert_eq!(text, "replacement");
+        Ok(())
+    }
+
+    #[test]
+    fn cursor_line_range_maps_one_based_inclusive_lines() -> Result<()> {
+        let completion = CursorTabCompletion {
+            text: "replacement loop".into(),
+            range: Some(RangeToReplace {
+                start_line: 11,
+                end_line: 14,
+                start_column: 0,
+                end_column: 0,
+            }),
+            suggestion_start_line: None,
+        };
+
+        let (range, text) = completion.replacement(PointUtf16::new(13, 1), "}")?;
+
+        assert_eq!(range.start.0, PointUtf16::new(10, 0));
+        assert_eq!(range.end.0, PointUtf16::new(14, 0));
+        assert_eq!(text, "replacement loop");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_line_range_takes_precedence_over_whitespace_prefix() -> Result<()> {
+        let completion = CursorTabCompletion {
+            text: "    D: Infinity,\n    finish: Infinity\n}".into(),
+            range: Some(RangeToReplace {
+                start_line: 16,
+                end_line: 17,
+                start_column: 0,
+                end_column: 0,
+            }),
+            suggestion_start_line: None,
+        };
+
+        let (range, text) = completion.replacement(PointUtf16::new(16, 2), "  ")?;
+
+        assert_eq!(range.start.0, PointUtf16::new(15, 0));
+        assert_eq!(range.end.0, PointUtf16::new(17, 0));
+        assert_eq!(text, "    D: Infinity,\n    finish: Infinity\n}");
         Ok(())
     }
 
@@ -1175,6 +1279,14 @@ mod tests {
             &format!("\n{current_line}\nconsole.log(\"done\");"),
             current_line,
         ));
+    }
+
+    #[test]
+    fn line_breaks_and_indentation_are_not_a_completion() {
+        assert!(contains_only_line_breaks_and_indentation("\n\n    \n\t"));
+        assert!(contains_only_line_breaks_and_indentation("\r\n  \r\n"));
+        assert!(!contains_only_line_breaks_and_indentation("    "));
+        assert!(!contains_only_line_breaks_and_indentation("\nvalue"));
     }
 
     #[test]
