@@ -460,6 +460,26 @@ mod tests {
     }
 
     #[test]
+    fn builds_current_file_without_diagnostics() {
+        let contents = "function main() {}\n";
+        let mut input = request_input(contents);
+        input.relative_workspace_path = "main.js".into();
+        input.language_id = "javascript".into();
+        input.cursor_position = CursorPosition { line: 0, column: 8 };
+        input.sha_256_hash = Some("contents-hash".into());
+
+        let request = input.build().unwrap();
+        assert!(request.linter_errors.is_none());
+        let current_file = request.current_file.unwrap();
+        assert_eq!(current_file.relative_workspace_path, "main.js");
+        assert_eq!(current_file.contents, contents);
+        assert_eq!(current_file.language_id, "javascript");
+        assert_eq!(current_file.file_version, Some(7));
+        assert_eq!(current_file.sha_256_hash.as_deref(), Some("contents-hash"));
+        assert!(current_file.diagnostics.is_empty());
+    }
+
+    #[test]
     fn rejects_invalid_positions_and_timings() {
         let mut input = request_input("fn main() {}\n");
         input.cursor_position.line = 2;

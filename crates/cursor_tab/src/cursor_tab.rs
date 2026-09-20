@@ -672,6 +672,10 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
         true
     }
 
+    fn accepts_by_line(&self) -> bool {
+        true
+    }
+
     fn supports_jump_to_edit() -> bool {
         false
     }
@@ -758,18 +762,19 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     .duration_since(UNIX_EPOCH)
                     .context("system clock is before the Unix epoch")?
                     .as_millis() as f64;
+                let contents = snapshot.text();
                 let request = StreamCppRequestInput {
                     relative_workspace_path,
                     workspace_root_path,
-                    contents: snapshot.text(),
+                    sha_256_hash: Some(sha_256(&contents)),
+                    file_version: file_version(&snapshot),
+                    contents,
                     cursor_position: CursorPosition {
                         line: i32::try_from(cursor.row)?,
                         column: i32::try_from(cursor.column)?,
                     },
                     selection: None,
                     language_id,
-                    file_version: None,
-                    sha_256_hash: None,
                     linter_errors: Vec::new(),
                     file_diff_histories: Vec::new(),
                     merged_diff_histories: Vec::new(),

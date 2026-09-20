@@ -925,6 +925,12 @@
     },
   },
   {
+    "context": "Editor && edit_prediction && edit_prediction_accepts_by_line && edit_prediction_mode == eager && !showing_completions",
+    "bindings": {
+      "tab": "editor::AcceptNextLineEditPrediction",
+    },
+  },
+  {
     "context": "Editor && showing_code_actions",
     "use_key_equivalents": true,
     "bindings": {

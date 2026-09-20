@@ -1219,6 +1219,44 @@ async fn test_tab_accepts_edit_prediction_over_completion(cx: &mut gpui::TestApp
 }
 
 #[gpui::test]
+async fn test_tab_accepts_next_line_for_line_accepting_provider(cx: &mut gpui::TestAppContext) {
+    init_test(cx, |_| {});
+    load_default_keymap(cx);
+
+    let mut cx = EditorTestContext::new(cx).await;
+    let provider = cx.new(|_| FakeEditPredictionDelegate {
+        accepts_by_line: true,
+        ..Default::default()
+    });
+    assign_editor_completion_provider(provider.clone(), &mut cx);
+    cx.set_state("functionˇ");
+
+    propose_edits(
+        &provider,
+        vec![(8..8, " main() {\nconst name = \"John\";\n}\n\nmain();")],
+        &mut cx,
+    );
+    cx.update_editor(|editor, window, cx| editor.update_visible_edit_prediction(window, cx));
+
+    cx.simulate_keystroke("tab");
+    cx.run_until_parked();
+
+    cx.assert_editor_state("function main() {ˇ");
+
+    propose_edits(
+        &provider,
+        vec![(17..17, "\nconst name = \"John\";\n}\n\nmain();")],
+        &mut cx,
+    );
+    cx.update_editor(|editor, window, cx| editor.update_visible_edit_prediction(window, cx));
+
+    cx.simulate_keystroke("tab");
+    cx.run_until_parked();
+
+    cx.assert_editor_state("function main() {\nconst name = \"John\";\n}\n\nmain();ˇ");
+}
+
+#[gpui::test]
 async fn test_cursor_popover_edit_prediction_keybind_cases(cx: &mut gpui::TestAppContext) {
     enum CursorPopoverPredictionKind {
         SingleLine,
@@ -1775,6 +1813,7 @@ impl CompletionProvider for FakeCompletionMenuProvider {
 pub struct FakeEditPredictionDelegate {
     pub completion: Option<edit_prediction_types::EditPrediction>,
     pub refresh_count: Arc<AtomicUsize>,
+    pub accepts_by_line: bool,
 }
 
 impl FakeEditPredictionDelegate {
@@ -1797,6 +1836,10 @@ impl EditPredictionDelegate for FakeEditPredictionDelegate {
 
     fn show_predictions_in_menu() -> bool {
         true
+    }
+
+    fn accepts_by_line(&self) -> bool {
+        self.accepts_by_line
     }
 
     fn supports_jump_to_edit() -> bool {

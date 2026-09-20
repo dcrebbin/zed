@@ -172,6 +172,9 @@ pub trait EditPredictionDelegate: 'static + Sized {
     fn show_tab_accept_marker() -> bool {
         false
     }
+    fn accepts_by_line(&self) -> bool {
+        false
+    }
     fn supports_jump_to_edit() -> bool {
         true
     }
@@ -228,6 +231,7 @@ pub trait EditPredictionDelegateHandle {
     ) -> bool;
     fn show_predictions_in_menu(&self) -> bool;
     fn show_tab_accept_marker(&self) -> bool;
+    fn accepts_by_line(&self, cx: &App) -> bool;
     fn supports_jump_to_edit(&self) -> bool;
     fn icons(&self, cx: &App) -> EditPredictionIconSet;
     fn data_collection_state(&self, cx: &App) -> DataCollectionState;
@@ -272,6 +276,10 @@ where
 
     fn show_tab_accept_marker(&self) -> bool {
         T::show_tab_accept_marker()
+    }
+
+    fn accepts_by_line(&self, cx: &App) -> bool {
+        self.read(cx).accepts_by_line()
     }
 
     fn supports_jump_to_edit(&self) -> bool {

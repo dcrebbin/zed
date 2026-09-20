@@ -374,6 +374,11 @@ impl Editor {
             return;
         }
 
+        let should_stop_before_newline = matches!(granularity, EditPredictionGranularity::Line)
+            && self
+                .edit_prediction_provider()
+                .is_some_and(|provider| provider.accepts_by_line(cx));
+
         match &active_edit_prediction.completion {
             EditPrediction::MoveWithin { target, .. } => {
                 let target = *target;
@@ -536,7 +541,12 @@ impl Editor {
                                     partial
                                 }
                                 EditPredictionGranularity::Line => {
-                                    if let Some(line) = text.split_inclusive('\n').next() {
+                                    let line = if should_stop_before_newline {
+                                        text.split('\n').next()
+                                    } else {
+                                        text.split_inclusive('\n').next()
+                                    };
+                                    if let Some(line) = line {
                                         line.to_string()
                                     } else {
                                         text.to_string()
@@ -625,6 +635,35 @@ impl Editor {
         Some(self.edit_prediction_provider.as_ref()?.provider.clone())
     }
 
+    pub(super) fn edit_prediction_accepts_by_line(&self, cx: &mut App) -> bool {
+        if !self
+            .edit_prediction_provider()
+            .is_some_and(|provider| provider.accepts_by_line(cx))
+        {
+            return false;
+        }
+
+        let Some(active_edit_prediction) = self.active_edit_prediction.as_ref() else {
+            return false;
+        };
+        let EditPrediction::Edit { edits, .. } = &active_edit_prediction.completion else {
+            return false;
+        };
+        let snapshot = self.buffer.read(cx).snapshot(cx);
+        let cursor_offset = self
+            .selections
+            .newest::<MultiBufferOffset>(&self.display_snapshot(cx))
+            .head();
+
+        edits.iter().any(|(range, text)| {
+            let range = range.to_offset(&snapshot);
+            range.is_empty()
+                && range.start == cursor_offset
+                && !text.starts_with('\n')
+                && text.contains('\n')
+        })
+    }
+
     pub(super) fn preview_edit_prediction_keystroke(
         &self,
         window: &mut Window,
@@ -647,8 +686,13 @@ impl Editor {
         window: &mut Window,
         cx: &mut App,
     ) -> EditPredictionKeybindDisplay {
+        let accept_granularity = if self.edit_prediction_accepts_by_line(cx) {
+            EditPredictionGranularity::Line
+        } else {
+            EditPredictionGranularity::Full
+        };
         let accept_keystroke =
-            self.accept_edit_prediction_keystroke(EditPredictionGranularity::Full, window, cx);
+            self.accept_edit_prediction_keystroke(accept_granularity, window, cx);
         let preview_keystroke = self.preview_edit_prediction_keystroke(window, cx);
 
         let action = match surface {

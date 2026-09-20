@@ -2847,6 +2847,9 @@ impl Editor {
         if has_active_edit_prediction {
             key_context.add(EDIT_PREDICTION_KEY_CONTEXT);
             key_context.add("copilot_suggestion");
+            if self.edit_prediction_accepts_by_line(cx) {
+                key_context.add("edit_prediction_accepts_by_line");
+            }
         }
 
         if self.in_leading_whitespace {
