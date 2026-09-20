@@ -758,6 +758,14 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
         }
 
         let cursor = cursor_position.to_point_utf16(&snapshot);
+        let CursorTabRequestContext {
+            file_diff_histories,
+            ..
+        } = self.request_context(&buffer, cursor_position, cx);
+        log::debug!(
+            "Cursor Tab request context: file_diff_histories={}",
+            file_diff_histories.len()
+        );
         let (relative_workspace_path, workspace_root_path, language_id) = {
             let buffer = buffer.read(cx);
             let relative_workspace_path = buffer
@@ -817,7 +825,7 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     selection: None,
                     language_id,
                     linter_errors: Vec::new(),
-                    file_diff_histories: Vec::new(),
+                    file_diff_histories,
                     merged_diff_histories: Vec::new(),
                     additional_files: Vec::new(),
                     code_results: Vec::new(),
