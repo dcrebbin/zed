@@ -264,6 +264,32 @@ struct CursorTabCompletion {
 }
 
 impl CursorTabCompletion {
+    fn normalize_document_echo(&mut self, contents: &str, cursor_at_end: bool) {
+        let has_reversed_range = self.range.is_some_and(|range| {
+            (range.end_line, range.end_column) < (range.start_line, range.start_column)
+        });
+        if !cursor_at_end || contents.is_empty() || !has_reversed_range {
+            return;
+        }
+
+        let echoed_suffix = std::iter::once(0)
+            .chain(contents.match_indices('\n').map(|(index, _)| index + 1))
+            .filter_map(|start| {
+                let suffix = &contents[start..];
+                (!suffix.is_empty() && self.text.starts_with(suffix)).then_some(suffix)
+            })
+            .next();
+        let Some(echoed_suffix) = echoed_suffix else {
+            return;
+        };
+        let remaining = &self.text[echoed_suffix.len()..];
+        if remaining.trim().is_empty() || remaining.trim() == contents.trim() {
+            self.text.clear();
+        } else {
+            self.text = remaining.to_owned();
+        }
+    }
+
     fn replacement<'a>(
         &'a self,
         cursor: PointUtf16,
@@ -276,17 +302,18 @@ impl CursorTabCompletion {
         }
 
         if let Some(range) = self.range {
-            return Ok((
-                Unclipped(PointUtf16::new(
-                    u32::try_from(range.start_line)?,
-                    u32::try_from(range.start_column)?,
-                ))
-                    ..Unclipped(PointUtf16::new(
-                        u32::try_from(range.end_line)?,
-                        u32::try_from(range.end_column)?,
-                    )),
-                &self.text,
-            ));
+            let start = PointUtf16::new(
+                u32::try_from(range.start_line)?,
+                u32::try_from(range.start_column)?,
+            );
+            let end = PointUtf16::new(
+                u32::try_from(range.end_line)?,
+                u32::try_from(range.end_column)?,
+            );
+            if end < start {
+                return Ok((Unclipped(cursor)..Unclipped(cursor), &self.text));
+            }
+            return Ok((Unclipped(start)..Unclipped(end), &self.text));
         }
 
         if let Some(start_row) = self
@@ -319,6 +346,20 @@ fn minimize_replacement<'a>(
     }
 
     (range, replacement_text)
+}
+
+fn repeats_current_line(replacement_text: &str, current_line_prefix: &str) -> bool {
+    if current_line_prefix.is_empty() {
+        return false;
+    }
+
+    let mut lines = replacement_text
+        .lines()
+        .filter(|line| !line.trim().is_empty());
+    let Some(first_line) = lines.next() else {
+        return false;
+    };
+    first_line == current_line_prefix && lines.all(|line| line == current_line_prefix)
 }
 
 struct CursorTabRequestContext {
@@ -792,7 +833,7 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                 }
                 .build()?;
 
-                let completion = Self::fetch_completion(
+                let mut completion = Self::fetch_completion(
                     http_client,
                     api_url,
                     bearer_token,
@@ -802,6 +843,9 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     request,
                 )
                 .await?;
+                let contents = snapshot.text();
+                let cursor_at_end = cursor == snapshot.max_point().to_point_utf16(&snapshot);
+                completion.normalize_document_echo(&contents, cursor_at_end);
                 if completion.text.is_empty() {
                     return Ok(None);
                 }
@@ -821,6 +865,12 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                 log::debug!(
                     "Cursor Tab normalized completion: cursor={cursor:?}, current_line_prefix={current_line_prefix:?}, existing_text={existing_text:?}, initial_range={unminimized_range:?}, initial_text={unminimized_text:?}, final_range={replacement_range:?}, final_text={replacement_text:?}"
                 );
+                if replacement_range.is_empty() && replacement_text.is_empty() {
+                    return Ok(None);
+                }
+                if repeats_current_line(replacement_text, &current_line_prefix) {
+                    return Ok(None);
+                }
                 let edit_range = if replacement_range.is_empty() {
                     // A right-biased insertion keeps the live cursor before the preview inlay.
                     let insertion_anchor = snapshot.anchor_after(replacement_range.start);
@@ -1047,6 +1097,20 @@ mod tests {
     }
 
     #[test]
+    fn exact_replacement_is_minimized_to_empty_insertion() {
+        let cursor = PointUtf16::new(3, 10);
+        let (range, text) = minimize_replacement(
+            PointUtf16::new(3, 0)..cursor,
+            cursor,
+            "console.lo",
+            "console.lo",
+        );
+
+        assert_eq!(range, cursor..cursor);
+        assert!(text.is_empty());
+    }
+
+    #[test]
     fn typed_prefix_takes_precedence_over_reversed_explicit_range() -> Result<()> {
         let completion = CursorTabCompletion {
             text: "console.log(\"Hello World\");".into(),
@@ -1066,6 +1130,103 @@ mod tests {
         assert_eq!(range.end.0, cursor);
         assert_eq!(text, "log(\"Hello World\");");
         Ok(())
+    }
+
+    #[test]
+    fn reversed_explicit_range_for_multiline_continuation_inserts_at_cursor() -> Result<()> {
+        let completion = CursorTabCompletion {
+            text: "\nget_data(\"https://example.com/posts\");".into(),
+            range: Some(RangeToReplace {
+                start_line: 6,
+                start_column: 7,
+                end_line: 0,
+                end_column: 0,
+            }),
+            suggestion_start_line: None,
+        };
+        let cursor = PointUtf16::new(6, 55);
+
+        let (range, text) =
+            completion.replacement(cursor, "get_data(\"https://example.com/posts\");")?;
+
+        assert_eq!(range.start.0, cursor);
+        assert_eq!(range.end.0, cursor);
+        assert_eq!(text, "\nget_data(\"https://example.com/posts\");");
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_current_line_is_not_a_completion() {
+        let current_line = "get_data(\"https://example.com/posts\");";
+
+        assert!(repeats_current_line(
+            &format!("\n{current_line}\n{current_line}\n{current_line}"),
+            current_line,
+        ));
+        assert!(!repeats_current_line(
+            &format!("\n{current_line}\nconsole.log(\"done\");"),
+            current_line,
+        ));
+    }
+
+    #[test]
+    fn suppresses_reversed_range_completion_that_echoes_document_at_end() {
+        let contents = "function getRandomNumber(min, max) {\n    return max;\n}\n\nconsole.log(getRandomNumber(1, 10));";
+        let mut completion = CursorTabCompletion {
+            text: contents.into(),
+            range: Some(RangeToReplace {
+                start_line: 1,
+                start_column: 5,
+                end_line: 0,
+                end_column: 0,
+            }),
+            suggestion_start_line: None,
+        };
+
+        completion.normalize_document_echo(contents, true);
+
+        assert!(completion.text.is_empty());
+    }
+
+    #[test]
+    fn suppresses_reversed_range_completion_that_echoes_document_twice_at_end() {
+        let contents = "function getRandomNumber(min, max) {\n    return max;\n}\n\nconsole.log(getRandomNumber(1, 10));";
+        let mut completion = CursorTabCompletion {
+            text: format!("{contents}\n\n{contents}"),
+            range: Some(RangeToReplace {
+                start_line: 1,
+                start_column: 5,
+                end_line: 0,
+                end_column: 0,
+            }),
+            suggestion_start_line: None,
+        };
+
+        completion.normalize_document_echo(contents, true);
+
+        assert!(completion.text.is_empty());
+    }
+
+    #[test]
+    fn strips_echoed_document_suffix_without_replacing_existing_text() {
+        let current_line = "get_data(\"https://example.com/posts\");";
+        let contents =
+            format!("async function get_data() {{\n    return response;\n}}\n\n{current_line}");
+        let mut completion = CursorTabCompletion {
+            text: format!("}}\n\n{current_line}\n{current_line}\n{current_line}"),
+            range: Some(RangeToReplace {
+                start_line: 5,
+                start_column: 8,
+                end_line: 0,
+                end_column: 0,
+            }),
+            suggestion_start_line: None,
+        };
+
+        completion.normalize_document_echo(&contents, true);
+
+        assert_eq!(completion.text, format!("\n{current_line}\n{current_line}"));
+        assert!(repeats_current_line(&completion.text, current_line));
     }
 
     #[test]
