@@ -1,10 +1,28 @@
 use anyhow::{Result, anyhow, bail};
 use prost::Message;
 
+mod request;
+
+pub use request::*;
+
 const CONNECT_HEADER_LENGTH: usize = 5;
 const CONNECT_END_STREAM_FLAG: u8 = 0x02;
 const CONNECT_COMPRESSED_FLAG: u8 = 0x01;
 const DEFAULT_MAX_FRAME_LENGTH: usize = 8 * 1024 * 1024;
+
+pub const CURSOR_TAB_API_URL: &str =
+    "https://us-only.gcpp.cursor.sh/aiserver.v1.AiService/StreamCpp";
+pub const CURSOR_TAB_MODEL: &str = "fast";
+
+pub fn encode_connect_message(message: &impl Message) -> Result<Vec<u8>> {
+    let payload = message.encode_to_vec();
+    let payload_length = u32::try_from(payload.len())?;
+    let mut frame = Vec::with_capacity(CONNECT_HEADER_LENGTH + payload.len());
+    frame.push(0);
+    frame.extend_from_slice(&payload_length.to_be_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
 
 #[derive(Clone, PartialEq, Message)]
 pub struct StreamCppResponse {

@@ -16626,6 +16626,7 @@ dependencies = [
  "copilot",
  "copilot_ui",
  "cpal",
+ "cursor_tab",
  "edit_prediction",
  "edit_prediction_ui",
  "editor",

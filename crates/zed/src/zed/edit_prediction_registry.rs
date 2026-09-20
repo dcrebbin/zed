@@ -118,6 +118,7 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
             Some(EditPredictionProviderConfig::Zed(EditPredictionModel::Zeta))
         }
         EditPredictionProvider::Codestral => Some(EditPredictionProviderConfig::Codestral),
+        EditPredictionProvider::CursorTab => None,
         EditPredictionProvider::Ollama | EditPredictionProvider::OpenAiCompatibleApi => {
             let custom_settings = if provider == EditPredictionProvider::Ollama {
                 settings.ollama.as_ref()?

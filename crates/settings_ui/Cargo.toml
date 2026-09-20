@@ -25,6 +25,7 @@ client.workspace = true
 cloud_api_types.workspace = true
 component.workspace = true
 codestral.workspace = true
+cursor_tab.workspace = true
 collections.workspace = true
 context_server.workspace = true
 copilot.workspace = true

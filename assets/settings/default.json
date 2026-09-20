@@ -1905,6 +1905,12 @@
       "max_tokens": 150,
       "prediction_debounce": 150,
     },
+    "cursor_tab": {
+      "api_url": "https://us-only.gcpp.cursor.sh/aiserver.v1.AiService/StreamCpp",
+      "model": "fast",
+      "client_version": "",
+      "prediction_debounce": 75,
+    },
     "ollama": {
       "api_url": "http://localhost:11434",
       "model": "qwen2.5-coder:7b-base",

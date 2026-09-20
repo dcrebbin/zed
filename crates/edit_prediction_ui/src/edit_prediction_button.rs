@@ -533,7 +533,7 @@ impl Render for EditPredictionButton {
                 div().child(popover_menu.into_any_element())
             }
 
-            EditPredictionProvider::None => div().hidden(),
+            EditPredictionProvider::None | EditPredictionProvider::CursorTab => div().hidden(),
         }
     }
 }

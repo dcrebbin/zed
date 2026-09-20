@@ -95,6 +95,7 @@ pub enum EditPredictionProvider {
     Copilot,
     Zed,
     Codestral,
+    CursorTab,
     Ollama,
     OpenAiCompatibleApi,
     Mercury,
@@ -107,6 +108,7 @@ impl EditPredictionProvider {
             EditPredictionProvider::None
             | EditPredictionProvider::Copilot
             | EditPredictionProvider::Codestral
+            | EditPredictionProvider::CursorTab
             | EditPredictionProvider::Ollama
             | EditPredictionProvider::OpenAiCompatibleApi
             | EditPredictionProvider::Mercury => false,
@@ -118,6 +120,7 @@ impl EditPredictionProvider {
             EditPredictionProvider::Zed => Some("Zed AI"),
             EditPredictionProvider::Copilot => Some("GitHub Copilot"),
             EditPredictionProvider::Codestral => Some("Codestral"),
+            EditPredictionProvider::CursorTab => Some("Cursor Tab"),
             EditPredictionProvider::Mercury => Some("Mercury"),
             EditPredictionProvider::None => None,
             EditPredictionProvider::Ollama => Some("Ollama"),
@@ -143,6 +146,8 @@ pub struct EditPredictionSettingsContent {
     pub copilot: Option<CopilotSettingsContent>,
     /// Settings specific to Codestral.
     pub codestral: Option<CodestralSettingsContent>,
+    /// Settings specific to Cursor Tab.
+    pub cursor_tab: Option<CursorTabSettingsContent>,
     /// Settings specific to Ollama.
     pub ollama: Option<OllamaEditPredictionSettingsContent>,
     /// Settings specific to using custom OpenAI-compatible servers for edit prediction.
@@ -263,6 +268,28 @@ pub struct CodestralSettingsContent {
     /// after typing stops. Set to 0 to request predictions immediately.
     ///
     /// Default: 150
+    pub prediction_debounce: Option<DelayMs>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq)]
+pub struct CursorTabSettingsContent {
+    /// API URL used for Cursor Tab completion requests.
+    ///
+    /// Default: "https://us-only.gcpp.cursor.sh/aiserver.v1.AiService/StreamCpp"
+    pub api_url: Option<String>,
+    /// Model used for Cursor Tab completions.
+    ///
+    /// Default: "fast"
+    pub model: Option<String>,
+    /// Cursor client version sent with completion requests.
+    ///
+    /// Default: ""
+    pub client_version: Option<String>,
+    /// The debounce delay in milliseconds before automatically requesting a prediction
+    /// after typing stops. Set to 0 to request predictions immediately.
+    ///
+    /// Default: 75
     pub prediction_debounce: Option<DelayMs>,
 }
 

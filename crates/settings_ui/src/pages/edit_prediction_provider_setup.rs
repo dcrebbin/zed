@@ -1,4 +1,5 @@
 use codestral::{CODESTRAL_API_URL, codestral_api_key_state, codestral_api_url};
+use cursor_tab::{CURSOR_TAB_API_URL, CURSOR_TAB_MODEL};
 use edit_prediction::{
     ApiKeyState,
     mercury::{MERCURY_CREDENTIALS_URL, mercury_api_token},
@@ -32,6 +33,7 @@ pub(crate) fn render_edit_prediction_setup_page(
     let providers = [
         Some(render_provider_dropdown(window, cx)),
         Some(render_zed_provider(settings_window, window, cx).into_any_element()),
+        Some(render_cursor_tab_provider(settings_window, window, cx).into_any_element()),
         render_github_copilot_provider(settings_window, window, cx)
             .map(IntoElement::into_any_element),
         Some(
@@ -839,6 +841,164 @@ fn codestral_settings() -> Box<[SettingsPageItem]> {
             files: USER,
         }),
     ])
+}
+
+fn cursor_tab_settings() -> Box<[SettingsPageItem]> {
+    Box::new([
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "API URL",
+            description: "The API URL used for Cursor Tab completion requests.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                pick: |settings| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .as_ref()?
+                        .cursor_tab
+                        .as_ref()?
+                        .api_url
+                        .as_ref()
+                },
+                write: |settings, value, _app: &App| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .get_or_insert_default()
+                        .cursor_tab
+                        .get_or_insert_default()
+                        .api_url = value;
+                },
+                json_path: Some("edit_predictions.cursor_tab.api_url"),
+            }),
+            metadata: Some(Box::new(SettingsFieldMetadata {
+                placeholder: Some(CURSOR_TAB_API_URL),
+                ..Default::default()
+            })),
+            files: USER,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "Model",
+            description: "The model used for Cursor Tab completions.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                pick: |settings| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .as_ref()?
+                        .cursor_tab
+                        .as_ref()?
+                        .model
+                        .as_ref()
+                },
+                write: |settings, value, _app: &App| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .get_or_insert_default()
+                        .cursor_tab
+                        .get_or_insert_default()
+                        .model = value;
+                },
+                json_path: Some("edit_predictions.cursor_tab.model"),
+            }),
+            metadata: Some(Box::new(SettingsFieldMetadata {
+                placeholder: Some(CURSOR_TAB_MODEL),
+                ..Default::default()
+            })),
+            files: USER,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "Cursor Client Version",
+            description: "The Cursor client version sent with completion requests.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                pick: |settings| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .as_ref()?
+                        .cursor_tab
+                        .as_ref()?
+                        .client_version
+                        .as_ref()
+                },
+                write: |settings, value, _app: &App| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .get_or_insert_default()
+                        .cursor_tab
+                        .get_or_insert_default()
+                        .client_version = value;
+                },
+                json_path: Some("edit_predictions.cursor_tab.client_version"),
+            }),
+            metadata: None,
+            files: USER,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "Prediction Debounce",
+            description: "Delay in milliseconds before automatically requesting a prediction after typing stops. Set to 0 to request predictions immediately.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                pick: |settings| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .as_ref()?
+                        .cursor_tab
+                        .as_ref()?
+                        .prediction_debounce
+                        .as_ref()
+                },
+                write: |settings, value, _app: &App| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .get_or_insert_default()
+                        .cursor_tab
+                        .get_or_insert_default()
+                        .prediction_debounce = value;
+                },
+                json_path: Some("edit_predictions.cursor_tab.prediction_debounce"),
+            }),
+            metadata: None,
+            files: USER,
+        }),
+    ])
+}
+
+fn render_cursor_tab_provider(
+    settings_window: &SettingsWindow,
+    window: &mut Window,
+    cx: &mut Context<SettingsWindow>,
+) -> impl IntoElement {
+    let settings = cursor_tab_settings();
+    let fields = settings_window
+        .render_sub_page_items_section(settings.iter().enumerate(), true, window, cx)
+        .into_any_element();
+
+    v_flex()
+        .id("cursor-tab")
+        .min_w_0()
+        .pt_8()
+        .gap_1p5()
+        .child(
+            SettingsSectionHeader::new("Cursor Tab")
+                .icon(IconName::CursorIBeam)
+                .no_padding(true),
+        )
+        .child(div().px_neg_8().child(fields))
 }
 
 fn mercury_settings() -> Box<[SettingsPageItem]> {

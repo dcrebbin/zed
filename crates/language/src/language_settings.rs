@@ -497,6 +497,8 @@ pub struct EditPredictionSettings {
     pub copilot: CopilotSettings,
     /// Settings specific to Codestral.
     pub codestral: CodestralSettings,
+    /// Settings specific to Cursor Tab.
+    pub cursor_tab: CursorTabSettings,
     /// Settings specific to Ollama.
     pub ollama: Option<OpenAiCompatibleEditPredictionSettings>,
     /// Settings specific to using custom OpenAI-compatible servers for edit prediction.
@@ -530,6 +532,7 @@ impl EditPredictionSettings {
         let delay = match provider {
             settings::EditPredictionProvider::Copilot => self.copilot.prediction_debounce,
             settings::EditPredictionProvider::Codestral => self.codestral.prediction_debounce,
+            settings::EditPredictionProvider::CursorTab => self.cursor_tab.prediction_debounce,
             settings::EditPredictionProvider::Ollama => self
                 .ollama
                 .as_ref()
@@ -554,6 +557,7 @@ impl EditPredictionSettings {
         match delegate_name {
             "copilot" => Duration::from_millis(self.copilot.prediction_debounce.0),
             "codestral" => Duration::from_millis(self.codestral.prediction_debounce.0),
+            "cursor-tab" => Duration::from_millis(self.cursor_tab.prediction_debounce.0),
             "zed-predict" => self.debounce_for(self.provider),
             _ => Duration::ZERO,
         }
@@ -588,6 +592,18 @@ pub struct CodestralSettings {
     pub max_tokens: Option<u32>,
     /// Custom API URL to use for Codestral.
     pub api_url: Option<String>,
+    /// Automatic prediction debounce delay.
+    pub prediction_debounce: DelayMs,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CursorTabSettings {
+    /// API URL used for Cursor Tab completion requests.
+    pub api_url: Arc<str>,
+    /// Model used for Cursor Tab completions.
+    pub model: String,
+    /// Cursor client version sent with completion requests.
+    pub client_version: String,
     /// Automatic prediction debounce delay.
     pub prediction_debounce: DelayMs,
 }
@@ -938,6 +954,14 @@ impl settings::Settings for AllLanguageSettings {
             prediction_debounce: codestral.prediction_debounce.unwrap(),
         };
 
+        let cursor_tab = edit_predictions.cursor_tab.unwrap();
+        let cursor_tab_settings = CursorTabSettings {
+            api_url: cursor_tab.api_url.unwrap().into(),
+            model: cursor_tab.model.unwrap(),
+            client_version: cursor_tab.client_version.unwrap(),
+            prediction_debounce: cursor_tab.prediction_debounce.unwrap(),
+        };
+
         let ollama = edit_predictions.ollama.unwrap();
         let ollama_settings = ollama
             .model
@@ -1006,6 +1030,7 @@ impl settings::Settings for AllLanguageSettings {
                 mode: edit_predictions_mode,
                 copilot: copilot_settings,
                 codestral: codestral_settings,
+                cursor_tab: cursor_tab_settings,
                 ollama: ollama_settings,
                 open_ai_compatible_api: openai_compatible_settings,
                 zed: ZedEditPredictionSettings {
