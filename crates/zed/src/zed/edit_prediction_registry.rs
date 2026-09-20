@@ -273,11 +273,7 @@ fn assign_edit_prediction_provider(
                 }
             });
             let provider = cx.new(|_| {
-                CursorTabEditPredictionDelegate::new(
-                    client.http_client(),
-                    project,
-                    store,
-                )
+                CursorTabEditPredictionDelegate::new(client.http_client(), project, store)
             });
             editor.set_edit_prediction_provider(Some(provider), trigger, window, cx);
         }

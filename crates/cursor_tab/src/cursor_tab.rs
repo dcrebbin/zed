@@ -816,8 +816,14 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                 log::debug!(
                     "Cursor Tab normalized completion: cursor={cursor:?}, current_line_prefix={current_line_prefix:?}, existing_text={existing_text:?}, initial_range={unminimized_range:?}, initial_text={unminimized_text:?}, final_range={replacement_range:?}, final_text={replacement_text:?}"
                 );
-                let edit_range = snapshot.anchor_before(replacement_range.start)
-                    ..snapshot.anchor_after(replacement_range.end);
+                let edit_range = if replacement_range.is_empty() {
+                    // A right-biased insertion keeps the live cursor before the preview inlay.
+                    let insertion_anchor = snapshot.anchor_after(replacement_range.start);
+                    insertion_anchor..insertion_anchor
+                } else {
+                    snapshot.anchor_before(replacement_range.start)
+                        ..snapshot.anchor_after(replacement_range.end)
+                };
                 let edits: Arc<[(Range<Anchor>, Arc<str>)]> =
                     Arc::from([(edit_range, Arc::from(replacement_text))]);
                 let edit_preview = buffer
