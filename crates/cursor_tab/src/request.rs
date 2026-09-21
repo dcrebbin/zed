@@ -138,7 +138,7 @@ pub struct LinterError {
     #[prost(string, tag = "1")]
     pub message: String,
     #[prost(message, optional, tag = "2")]
-    pub range: Option<Selection>,
+    pub range: Option<CodeRange>,
     #[prost(string, optional, tag = "3")]
     pub source: Option<String>,
     #[prost(message, repeated, tag = "4")]
@@ -337,7 +337,7 @@ impl StreamCppRequestInput {
         let linter_errors = (!self.linter_errors.is_empty()).then(|| LinterErrors {
             relative_workspace_path: self.relative_workspace_path.clone(),
             errors: self.linter_errors,
-            file_contents: self.contents.clone(),
+            file_contents: String::new(),
         });
 
         Ok(StreamCppRequest {
@@ -443,7 +443,13 @@ mod tests {
         });
         input.linter_errors.push(LinterError {
             message: "cannot find function `unknown`".into(),
-            range: input.selection,
+            range: Some(CodeRange {
+                start_position: Some(Position { line: 1, column: 4 }),
+                end_position: Some(Position {
+                    line: 1,
+                    column: 11,
+                }),
+            }),
             source: Some("rustc".into()),
             related_information: Vec::new(),
             severity: None,
@@ -456,7 +462,15 @@ mod tests {
         assert_eq!(current_file.line_ending.as_deref(), Some("\r\n"));
         assert_eq!(current_file.language_id, "rust");
         assert_eq!(current_file.selection.unwrap().end_column, 11);
-        assert_eq!(request.linter_errors.unwrap().file_contents, contents);
+        let linter_errors = request.linter_errors.unwrap();
+        assert!(linter_errors.file_contents.is_empty());
+        assert_eq!(
+            linter_errors.errors[0]
+                .range
+                .and_then(|range| range.end_position)
+                .map(|position| position.column),
+            Some(11)
+        );
     }
 
     #[test]

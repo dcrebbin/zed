@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use edit_prediction::EditPredictionStore;
 use edit_prediction_types::{
     EditPrediction, EditPredictionDelegate, EditPredictionDiscardReason, EditPredictionIconSet,
-    EditPredictionRequestTrigger, interpolate_edits,
+    EditPredictionRequestTrigger, PredictedCursorPosition, interpolate_edits,
 };
 use futures::AsyncReadExt as _;
 use gpui::{App, AppContext as _, Context, Entity, Global, SharedString, Task};
@@ -19,8 +19,13 @@ use prost::Message;
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt,
+    fs::{File, OpenOptions},
+    io::Write as _,
+    mem,
     ops::Range,
-    sync::Arc,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use time::UtcOffset;
@@ -33,6 +38,40 @@ const CONNECT_HEADER_LENGTH: usize = 5;
 const CONNECT_END_STREAM_FLAG: u8 = 0x02;
 const CONNECT_COMPRESSED_FLAG: u8 = 0x01;
 const DEFAULT_MAX_FRAME_LENGTH: usize = 8 * 1024 * 1024;
+
+fn cursor_tab_debug_log_path() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let build_directory = executable.ancestors().find(|path| {
+        path.file_name()
+            .is_some_and(|name| name == "debug" || name == "release")
+    })?;
+    Some(build_directory.join("cursor-tab-debug.log"))
+}
+
+fn write_cursor_tab_debug(arguments: fmt::Arguments<'_>) {
+    static DEBUG_LOG: OnceLock<Option<Mutex<File>>> = OnceLock::new();
+    let Some(file) = DEBUG_LOG
+        .get_or_init(|| {
+            let path = cursor_tab_debug_log_path()?;
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(path)
+                .ok()?;
+            Some(Mutex::new(file))
+        })
+        .as_ref()
+    else {
+        return;
+    };
+    let Ok(mut file) = file.lock() else {
+        return;
+    };
+    if let Err(error) = writeln!(file, "{arguments}") {
+        log::error!("failed to write Cursor Tab debug log: {error}");
+    }
+}
 
 pub const CURSOR_TAB_API_URL: &str =
     "https://us-only.gcpp.cursor.sh/aiserver.v1.AiService/StreamCpp";
@@ -248,6 +287,8 @@ impl ConnectDecoder {
 struct CurrentCompletion {
     snapshot: BufferSnapshot,
     edits: Arc<[(Range<Anchor>, Arc<str>)]>,
+    cursor_position: Option<PredictedCursorPosition>,
+    should_retrigger: bool,
     edit_preview: EditPreview,
 }
 
@@ -257,10 +298,86 @@ impl CurrentCompletion {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
 struct CursorTabCompletion {
     text: String,
     range: Option<RangeToReplace>,
     suggestion_start_line: Option<i32>,
+    cursor_prediction_target: Option<CursorPredictionTarget>,
+    binding_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CursorTabStream {
+    edits: Vec<CursorTabCompletion>,
+    cursor_prediction_target: Option<CursorPredictionTarget>,
+}
+
+struct StreamAccumulator {
+    edits: Vec<CursorTabCompletion>,
+    current: CursorTabCompletion,
+    current_has_content: bool,
+    cursor_prediction_target: Option<CursorPredictionTarget>,
+    remove_leading_eol: bool,
+}
+
+impl StreamAccumulator {
+    fn apply(&mut self, message: StreamCppResponse) -> bool {
+        if message.begin_edit == Some(true) {
+            self.finish_current();
+        }
+        if message.should_remove_leading_eol == Some(true) {
+            self.remove_leading_eol = true;
+        }
+        if !message.text.is_empty() {
+            self.current.text.push_str(&message.text);
+            self.current_has_content = true;
+        }
+        if let Some(range) = message.range_to_replace {
+            self.current.range = Some(range);
+            self.current_has_content = true;
+        }
+        if let Some(start_line) = message.suggestion_start_line {
+            self.current.suggestion_start_line = Some(start_line);
+            self.current_has_content = true;
+        }
+        if let Some(target) = message.cursor_prediction_target {
+            self.cursor_prediction_target = Some(target.clone());
+            if self.current_has_content {
+                self.current.cursor_prediction_target = Some(target);
+            }
+        }
+        if let Some(binding_id) = message.binding_id {
+            self.current.binding_id = Some(binding_id);
+        }
+        if message.done_edit == Some(true) {
+            self.finish_current();
+        }
+        message.done_stream == Some(true)
+    }
+
+    fn finish_current(&mut self) {
+        if self.current_has_content {
+            if self.remove_leading_eol
+                && let Some(stripped) = self.current.text.strip_prefix('\n')
+            {
+                self.current.text = stripped.to_owned();
+            }
+            self.remove_leading_eol = false;
+            self.edits.push(mem::take(&mut self.current));
+        } else {
+            self.current = CursorTabCompletion::default();
+        }
+        self.current_has_content = false;
+    }
+
+    fn finish(mut self) -> CursorTabStream {
+        self.finish_current();
+        CursorTabStream {
+            edits: self.edits,
+            cursor_prediction_target: self.cursor_prediction_target,
+        }
+    }
 }
 
 impl CursorTabCompletion {
@@ -377,6 +494,201 @@ fn contains_only_line_breaks_and_indentation(text: &str) -> bool {
     (text.contains('\n') || text.contains('\r')) && text.chars().all(char::is_whitespace)
 }
 
+fn cursor_target_offset(
+    replacement_start_row: u32,
+    replacement_text: &str,
+    current_file_path: &str,
+    target: &CursorPredictionTarget,
+) -> Option<usize> {
+    if target.relative_path != current_file_path || target.line_number_one_indexed <= 0 {
+        return None;
+    }
+
+    let target_row = u32::try_from(target.line_number_one_indexed - 1).ok()?;
+    let relative_row = usize::try_from(target_row.checked_sub(replacement_start_row)?).ok()?;
+    let expected_lines = target.expected_content.lines().collect::<Vec<_>>();
+    if expected_lines.is_empty() {
+        return None;
+    }
+
+    let replacement_lines = replacement_text.split('\n').collect::<Vec<_>>();
+    let matched_lines = replacement_lines.get(relative_row..)?;
+    if matched_lines.len() < expected_lines.len()
+        || !matched_lines
+            .iter()
+            .zip(&expected_lines)
+            .all(|(actual, expected)| actual.trim() == expected.trim())
+    {
+        return None;
+    }
+
+    let last_index = relative_row + expected_lines.len() - 1;
+    let last_actual = replacement_lines[last_index];
+    let last_expected = expected_lines.last()?.trim();
+    let column = last_actual.find(last_expected)? + last_expected.len();
+    let line_start = replacement_text
+        .split_inclusive('\n')
+        .take(last_index)
+        .map(str::len)
+        .sum::<usize>();
+    Some(line_start + column)
+}
+
+fn should_refresh_for_trigger(
+    trigger: EditPredictionRequestTrigger,
+    retrigger_after_accept: bool,
+) -> bool {
+    trigger != EditPredictionRequestTrigger::PredictionAccepted || retrigger_after_accept
+}
+
+fn predicted_cursor_position(
+    snapshot: &BufferSnapshot,
+    replacement_range: &Range<PointUtf16>,
+    replacement_text: &str,
+    current_file_path: &str,
+    target: &CursorPredictionTarget,
+) -> Option<PredictedCursorPosition> {
+    if let Some(offset) = cursor_target_offset(
+        replacement_range.start.row,
+        replacement_text,
+        current_file_path,
+        target,
+    ) {
+        return Some(PredictedCursorPosition::new(
+            snapshot.anchor_before(replacement_range.start),
+            offset,
+        ));
+    }
+
+    if target.relative_path != current_file_path || target.line_number_one_indexed <= 0 {
+        return None;
+    }
+    let target_row = u32::try_from(target.line_number_one_indexed - 1).ok()?;
+    if target_row >= replacement_range.start.row && target_row < replacement_range.end.row {
+        return None;
+    }
+    let expected_lines = target.expected_content.lines().collect::<Vec<_>>();
+    if expected_lines.is_empty() || target_row > snapshot.max_point().row {
+        return None;
+    }
+    let end_row = target_row
+        .saturating_add(u32::try_from(expected_lines.len()).ok()?.saturating_sub(1))
+        .min(snapshot.max_point().row);
+    let actual_text = snapshot
+        .text_for_range(Point::new(target_row, 0)..Point::new(end_row, snapshot.line_len(end_row)))
+        .collect::<String>();
+    let actual_lines = actual_text.lines().collect::<Vec<_>>();
+    if actual_lines.len() < expected_lines.len()
+        || !actual_lines
+            .iter()
+            .zip(&expected_lines)
+            .all(|(actual, expected)| actual.trim() == expected.trim())
+    {
+        return None;
+    }
+
+    let last_expected = expected_lines.last()?.trim();
+    let last_row = target_row
+        .saturating_add(u32::try_from(expected_lines.len().saturating_sub(1)).unwrap_or(u32::MAX));
+    let last_actual = actual_lines.last()?;
+    let column = last_actual
+        .find(last_expected)
+        .map(|index| u32::try_from(index + last_expected.len()).unwrap_or(u32::MAX))
+        .unwrap_or(0)
+        .min(snapshot.line_len(last_row.min(snapshot.max_point().row)));
+    Some(PredictedCursorPosition::at_anchor(snapshot.anchor_before(
+        Point::new(last_row.min(snapshot.max_point().row), column),
+    )))
+}
+
+fn cursor_target_from_stream(stream: &CursorTabStream) -> Option<&CursorPredictionTarget> {
+    stream.cursor_prediction_target.as_ref().or_else(|| {
+        stream
+            .edits
+            .iter()
+            .rev()
+            .find_map(|edit| edit.cursor_prediction_target.as_ref())
+    })
+}
+
+fn map_cursor_target(
+    snapshot: &BufferSnapshot,
+    prepared_edits: &[(Range<PointUtf16>, String)],
+    current_file_path: &str,
+    target: &CursorPredictionTarget,
+) -> Option<PredictedCursorPosition> {
+    prepared_edits.iter().find_map(|(range, text)| {
+        predicted_cursor_position(snapshot, range, text, current_file_path, target)
+    })
+}
+
+fn prepared_edits_from_stream(
+    stream: &mut CursorTabStream,
+    snapshot: &BufferSnapshot,
+    cursor: PointUtf16,
+    current_line_prefix: &str,
+    contents: &str,
+    cursor_at_end: bool,
+) -> Result<Vec<(Range<PointUtf16>, String)>> {
+    let mut prepared = Vec::new();
+    for edit in &mut stream.edits {
+        edit.normalize_document_echo(contents, cursor_at_end);
+        if edit.text.is_empty() && edit.range.is_none() && edit.suggestion_start_line.is_none() {
+            continue;
+        }
+
+        let (replacement_range, replacement_text) =
+            edit.replacement(cursor, current_line_prefix)?;
+        let start = snapshot.clip_point_utf16(replacement_range.start, Bias::Left);
+        let end = snapshot.clip_point_utf16(replacement_range.end, Bias::Right);
+        let existing_text = snapshot.text_for_range(start..end).collect::<String>();
+        let at_cursor = start <= cursor && cursor <= end;
+        let (replacement_range, replacement_text) = if at_cursor {
+            minimize_replacement(start..end, cursor, &existing_text, replacement_text)
+        } else {
+            (start..end, replacement_text)
+        };
+        if replacement_range.is_empty() && replacement_text.is_empty() {
+            continue;
+        }
+        if contains_only_line_breaks_and_indentation(replacement_text) {
+            continue;
+        }
+        if at_cursor && repeats_current_line(replacement_text, current_line_prefix) {
+            continue;
+        }
+        prepared.push((replacement_range, replacement_text.to_owned()));
+    }
+    prepared.sort_by_key(|(range, _)| {
+        (
+            range.start.row,
+            range.start.column,
+            range.end.row,
+            range.end.column,
+        )
+    });
+    Ok(prepared)
+}
+
+fn anchors_from_prepared_edits(
+    snapshot: &BufferSnapshot,
+    prepared_edits: &[(Range<PointUtf16>, String)],
+) -> Arc<[(Range<Anchor>, Arc<str>)]> {
+    prepared_edits
+        .iter()
+        .map(|(replacement_range, replacement_text)| {
+            let edit_range = if replacement_range.is_empty() {
+                let insertion_anchor = snapshot.anchor_after(replacement_range.start);
+                insertion_anchor..insertion_anchor
+            } else {
+                snapshot.anchor_before(replacement_range.start)
+                    ..snapshot.anchor_after(replacement_range.end)
+            };
+            (edit_range, Arc::from(replacement_text.as_str()))
+        })
+        .collect()
+}
+
 struct CursorTabRequestContext {
     file_diff_histories: Vec<FileDiffHistory>,
     additional_files: Vec<AdditionalFile>,
@@ -405,11 +717,15 @@ fn linter_errors(snapshot: &BufferSnapshot) -> Vec<LinterError> {
         .diagnostics_in_range::<_, PointUtf16>(0..snapshot.len(), false)
         .map(|entry| LinterError {
             message: entry.diagnostic.message.as_str().to_owned(),
-            range: Some(Selection {
-                start_line: i32::try_from(entry.range.start.row).unwrap_or(i32::MAX),
-                start_column: i32::try_from(entry.range.start.column).unwrap_or(i32::MAX),
-                end_line: i32::try_from(entry.range.end.row).unwrap_or(i32::MAX),
-                end_column: i32::try_from(entry.range.end.column).unwrap_or(i32::MAX),
+            range: Some(CodeRange {
+                start_position: Some(Position {
+                    line: i32::try_from(entry.range.start.row).unwrap_or(i32::MAX),
+                    column: i32::try_from(entry.range.start.column).unwrap_or(i32::MAX),
+                }),
+                end_position: Some(Position {
+                    line: i32::try_from(entry.range.end.row).unwrap_or(i32::MAX),
+                    column: i32::try_from(entry.range.end.column).unwrap_or(i32::MAX),
+                }),
             }),
             source: entry.diagnostic.source.clone(),
             related_information: Vec::new(),
@@ -429,12 +745,108 @@ fn workspace_id(workspace_root_path: &str) -> Option<String> {
     (!workspace_root_path.is_empty()).then(|| sha_256(workspace_root_path))
 }
 
+fn cursor_relative_history_path(
+    history_path: &str,
+    current_file_full_path: Option<&str>,
+    current_file_relative_path: &str,
+) -> String {
+    if history_path == current_file_relative_path {
+        return history_path.to_owned();
+    }
+    if current_file_full_path == Some(history_path) {
+        return current_file_relative_path.to_owned();
+    }
+    if let Some(full_path) = current_file_full_path
+        && let Some(prefix) = full_path.strip_suffix(current_file_relative_path)
+        && !prefix.is_empty()
+        && let Some(relative) = history_path.strip_prefix(prefix)
+        && !relative.is_empty()
+    {
+        return relative.to_owned();
+    }
+    history_path.to_owned()
+}
+
+fn accumulate_stream_frames(
+    frames: impl IntoIterator<Item = ConnectFrame>,
+) -> Result<CursorTabStream> {
+    let mut accumulator = StreamAccumulator {
+        edits: Vec::new(),
+        current: CursorTabCompletion::default(),
+        current_has_content: false,
+        cursor_prediction_target: None,
+        remove_leading_eol: false,
+    };
+    for frame in frames {
+        match frame {
+            ConnectFrame::Message(message) => {
+                let range = message.range_to_replace.map(|range| {
+                    (
+                        range.start_line,
+                        range.end_line,
+                        range.start_column,
+                        range.end_column,
+                    )
+                });
+                let cursor_target = message.cursor_prediction_target.as_ref().map(|target| {
+                    (
+                        target.relative_path.clone(),
+                        target.line_number_one_indexed,
+                        target.expected_content.clone(),
+                        target.should_retrigger_cpp,
+                    )
+                });
+                let model_info = message.model_info.map(|model| {
+                    (
+                        model.is_fused_cursor_prediction_model,
+                        model.is_multidiff_model,
+                    )
+                });
+                log::debug!(
+                    "Cursor Tab response frame: text={:?}, suggestion_start_line={:?}, range={:?}, begin_edit={:?}, done_edit={:?}, done_stream={:?}, should_remove_leading_eol={:?}, binding_id={:?}, cursor_target={:?}, model_info={:?}",
+                    message.text,
+                    message.suggestion_start_line,
+                    range,
+                    message.begin_edit,
+                    message.done_edit,
+                    message.done_stream,
+                    message.should_remove_leading_eol,
+                    message.binding_id,
+                    cursor_target,
+                    model_info,
+                );
+                write_cursor_tab_debug(format_args!(
+                    "response frame: text={:?}, range={range:?}, begin_edit={:?}, done_edit={:?}, done_stream={:?}, should_remove_leading_eol={:?}, binding_id={:?}, cursor_target={cursor_target:?}",
+                    message.text,
+                    message.begin_edit,
+                    message.done_edit,
+                    message.done_stream,
+                    message.should_remove_leading_eol,
+                    message.binding_id,
+                ));
+                if accumulator.apply(*message) {
+                    break;
+                }
+            }
+            ConnectFrame::EndStream(trailer) => {
+                log::debug!("Cursor Tab response trailer: {trailer}");
+                if let Some(error) = trailer.get("error") {
+                    bail!("Cursor Tab stream error: {error}");
+                }
+            }
+        }
+    }
+    Ok(accumulator.finish())
+}
+
 pub struct CursorTabEditPredictionDelegate {
     http_client: Arc<dyn HttpClient>,
     project: Entity<Project>,
     edit_prediction_store: Entity<EditPredictionStore>,
     pending_request: Option<Task<Result<()>>>,
     current_completion: Option<CurrentCompletion>,
+    retrigger_after_accept: bool,
+    request_generation: u64,
 }
 
 impl CursorTabEditPredictionDelegate {
@@ -449,6 +861,8 @@ impl CursorTabEditPredictionDelegate {
             edit_prediction_store,
             pending_request: None,
             current_completion: None,
+            retrigger_after_accept: true,
+            request_generation: 0,
         }
     }
 
@@ -469,12 +883,28 @@ impl CursorTabEditPredictionDelegate {
                 )
             });
 
+        let (current_file_relative_path, current_file_full_path) = {
+            let buffer = active_buffer.read(cx);
+            let relative_path = buffer
+                .file()
+                .map(|file| file.path().as_std_path().to_string_lossy().into_owned())
+                .filter(|path| !path.is_empty())
+                .unwrap_or_else(|| "Untitled-1".to_string());
+            let full_path = buffer
+                .file()
+                .map(|file| file.full_path(cx).to_string_lossy().into_owned());
+            (relative_path, full_path)
+        };
+
         let mut histories_by_file: BTreeMap<String, (Vec<String>, Vec<f64>)> = BTreeMap::new();
         for event in events {
             let zeta_prompt::Event::BufferChange { path, diff, .. } = event.event.as_ref();
-            let history = histories_by_file
-                .entry(path.to_string_lossy().into_owned())
-                .or_default();
+            let file_name = cursor_relative_history_path(
+                &path.to_string_lossy(),
+                current_file_full_path.as_deref(),
+                &current_file_relative_path,
+            );
+            let history = histories_by_file.entry(file_name).or_default();
             history.0.push(diff.clone());
         }
         let file_diff_histories = histories_by_file
@@ -604,7 +1034,7 @@ impl CursorTabEditPredictionDelegate {
         request_id: String,
         session_id: String,
         request: StreamCppRequest,
-    ) -> Result<CursorTabCompletion> {
+    ) -> Result<CursorTabStream> {
         let request_body = encode_connect_message(&request)?;
         let request = http_client::Request::builder()
             .method(http_client::Method::POST)
@@ -631,83 +1061,34 @@ impl CursorTabEditPredictionDelegate {
         }
 
         let mut decoder = ConnectDecoder::default();
-        let mut completion = CursorTabCompletion {
-            text: String::new(),
-            range: None,
-            suggestion_start_line: None,
-        };
-        for frame in decoder.push(&body)? {
-            match frame {
-                ConnectFrame::Message(message) => {
-                    let range = message.range_to_replace.map(|range| {
-                        (
-                            range.start_line,
-                            range.end_line,
-                            range.start_column,
-                            range.end_column,
-                        )
-                    });
-                    let cursor_target = message.cursor_prediction_target.as_ref().map(|target| {
-                        (
-                            target.relative_path.as_str(),
-                            target.line_number_one_indexed,
-                            target.expected_content.as_str(),
-                            target.should_retrigger_cpp,
-                        )
-                    });
-                    let model_info = message.model_info.map(|model| {
-                        (
-                            model.is_fused_cursor_prediction_model,
-                            model.is_multidiff_model,
-                        )
-                    });
-                    log::debug!(
-                        "Cursor Tab response frame: text={:?}, suggestion_start_line={:?}, range={:?}, begin_edit={:?}, done_edit={:?}, done_stream={:?}, should_remove_leading_eol={:?}, binding_id={:?}, cursor_target={:?}, model_info={:?}",
-                        message.text,
-                        message.suggestion_start_line,
-                        range,
-                        message.begin_edit,
-                        message.done_edit,
-                        message.done_stream,
-                        message.should_remove_leading_eol,
-                        message.binding_id,
-                        cursor_target,
-                        model_info,
-                    );
-                    completion.text.push_str(&message.text);
-                    if let Some((start_line, end_line, start_column, end_column)) = range {
-                        completion.range = Some(RangeToReplace {
-                            start_line,
-                            end_line,
-                            start_column,
-                            end_column,
-                        });
-                    }
-                    if let Some(start_line) = message.suggestion_start_line {
-                        completion.suggestion_start_line = Some(start_line);
-                    }
-                }
-                ConnectFrame::EndStream(trailer) => {
-                    log::debug!("Cursor Tab response trailer: {trailer}");
-                    if let Some(error) = trailer.get("error") {
-                        bail!("Cursor Tab stream error: {error}");
-                    }
-                }
-            }
-        }
+        let frames = decoder.push(&body)?;
         decoder.finish()?;
+        let stream = accumulate_stream_frames(frames)?;
         log::debug!(
-            "Cursor Tab accumulated completion: text={:?}, suggestion_start_line={:?}, range={:?}",
-            completion.text,
-            completion.suggestion_start_line,
-            completion.range.map(|range| (
-                range.start_line,
-                range.end_line,
-                range.start_column,
-                range.end_column,
+            "Cursor Tab accumulated stream: edits={}, cursor_target={:?}",
+            stream.edits.len(),
+            stream.cursor_prediction_target.as_ref().map(|target| (
+                target.relative_path.as_str(),
+                target.line_number_one_indexed,
+                target.expected_content.as_str(),
+                target.should_retrigger_cpp,
             )),
         );
-        Ok(completion)
+        for (index, edit) in stream.edits.iter().enumerate() {
+            log::debug!(
+                "Cursor Tab accumulated edit {index}: text={:?}, suggestion_start_line={:?}, range={:?}, binding_id={:?}",
+                edit.text,
+                edit.suggestion_start_line,
+                edit.range.map(|range| (
+                    range.start_line,
+                    range.end_line,
+                    range.start_column,
+                    range.end_column,
+                )),
+                edit.binding_id,
+            );
+        }
+        Ok(stream)
     }
 }
 
@@ -757,12 +1138,22 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
         buffer: Entity<Buffer>,
         cursor_position: Anchor,
         debounce_duration: Duration,
-        _trigger: EditPredictionRequestTrigger,
+        trigger: EditPredictionRequestTrigger,
         cx: &mut Context<Self>,
     ) {
         let Some(bearer_token) = cursor_tab_bearer_token(cx) else {
             return;
         };
+        if !should_refresh_for_trigger(trigger, self.retrigger_after_accept) {
+            self.retrigger_after_accept = true;
+            log::debug!(
+                "Cursor Tab skipping refresh after accept because should_retrigger_cpp was false"
+            );
+            write_cursor_tab_debug(format_args!(
+                "skipping refresh after accept: trigger={trigger:?}"
+            ));
+            return;
+        }
         let snapshot = buffer.read(cx).snapshot();
         if self
             .current_completion
@@ -775,12 +1166,21 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
         let cursor = cursor_position.to_point_utf16(&snapshot);
         let CursorTabRequestContext {
             file_diff_histories,
-            ..
+            additional_files,
+            code_results,
         } = self.request_context(&buffer, cursor_position, cx);
         log::debug!(
-            "Cursor Tab request context: file_diff_histories={}",
-            file_diff_histories.len()
+            "Cursor Tab request context: file_diff_histories={}, additional_files={}, code_results={}",
+            file_diff_histories.len(),
+            additional_files.len(),
+            code_results.len()
         );
+        write_cursor_tab_debug(format_args!(
+            "request context: file_diff_histories={}, additional_files={}, code_results={}",
+            file_diff_histories.len(),
+            additional_files.len(),
+            code_results.len()
+        ));
         for history in &file_diff_histories {
             log::debug!(
                 "Cursor Tab file diff history: file={:?}, edits={}, latest={:?}",
@@ -788,6 +1188,11 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                 history.diff_history.len(),
                 history.diff_history.last()
             );
+            write_cursor_tab_debug(format_args!(
+                "file diff history: file={:?}, edits={}",
+                history.file_name,
+                history.diff_history.len(),
+            ));
         }
         let (relative_workspace_path, workspace_root_path, language_id) = {
             let buffer = buffer.read(cx);
@@ -815,6 +1220,7 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                 .unwrap_or_else(|| "plaintext".to_string());
             (relative_workspace_path, workspace_root_path, language_id)
         };
+        let current_file_path = relative_workspace_path.clone();
         let settings = &all_language_settings(None, cx).edit_predictions.cursor_tab;
         let api_url = settings.api_url.clone().into();
         let model = settings.model.clone();
@@ -823,11 +1229,39 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
         let session_id = settings.session_id.clone();
         let http_client = self.http_client.clone();
         let started_at = Instant::now();
+        let intent_source = match trigger {
+            EditPredictionRequestTrigger::DiagnosticNavigation => "linter_errors",
+            EditPredictionRequestTrigger::Explicit => "manual_trigger",
+            EditPredictionRequestTrigger::LSPCompletionAccepted => "lsp_suggestions",
+            EditPredictionRequestTrigger::PredictionAccepted
+            | EditPredictionRequestTrigger::PredictionPartiallyAccepted => "cursor_prediction",
+            EditPredictionRequestTrigger::BufferEdit => "editor_change",
+            EditPredictionRequestTrigger::EditorCreated
+            | EditPredictionRequestTrigger::ProviderChanged
+            | EditPredictionRequestTrigger::UserInfoChanged
+            | EditPredictionRequestTrigger::VimModeChanged
+            | EditPredictionRequestTrigger::SettingsChanged
+            | EditPredictionRequestTrigger::Other => "typing",
+        };
 
+        self.request_generation = self.request_generation.wrapping_add(1);
+        let generation = self.request_generation;
+        self.current_completion = None;
+        write_cursor_tab_debug(format_args!(
+            "starting request generation={generation}, trigger={trigger:?}"
+        ));
+        cx.notify();
         self.pending_request = Some(cx.spawn(async move |this, cx| {
             let result: Result<Option<CurrentCompletion>> = async {
                 if !debounce_duration.is_zero() {
                     cx.background_executor().timer(debounce_duration).await;
+                }
+                let is_current = this.update(cx, |this, _cx| this.request_generation == generation)?;
+                if !is_current {
+                    write_cursor_tab_debug(format_args!(
+                        "discarding stale generation {generation} after debounce"
+                    ));
+                    return Ok(None);
                 }
 
                 let now = SystemTime::now()
@@ -835,15 +1269,26 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     .context("system clock is before the Unix epoch")?
                     .as_millis() as f64;
                 let contents = snapshot.text();
+                let linter_errors = linter_errors(&snapshot);
                 let client_timezone_offset = UtcOffset::current_local_offset()
                     .ok()
                     .map(|offset| -f64::from(offset.whole_minutes()));
+                write_cursor_tab_debug(format_args!(
+                    "request metadata: intent={intent_source:?}, generation={generation}, linter_errors={}",
+                    linter_errors.len(),
+                ));
                 log::debug!(
                     "Cursor Tab current file: path={relative_workspace_path:?}, language={language_id:?}, cursor={cursor:?}, bytes={}, lines={}, version={:?}",
                     contents.len(),
                     contents.lines().count(),
                     file_version(&snapshot)
                 );
+                write_cursor_tab_debug(format_args!(
+                    "current file: path={relative_workspace_path:?}, language={language_id:?}, cursor={cursor:?}, bytes={}, lines={}, version={:?}",
+                    contents.len(),
+                    contents.lines().count(),
+                    file_version(&snapshot),
+                ));
                 let request = StreamCppRequestInput {
                     relative_workspace_path,
                     workspace_root_path,
@@ -856,13 +1301,13 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     },
                     selection: None,
                     language_id,
-                    linter_errors: Vec::new(),
+                    linter_errors,
                     file_diff_histories,
                     merged_diff_histories: Vec::new(),
-                    additional_files: Vec::new(),
-                    code_results: Vec::new(),
+                    additional_files,
+                    code_results,
                     model_name: Some(model),
-                    intent_source: Some("typing".to_string()),
+                    intent_source: Some(intent_source.to_string()),
                     workspace_id: None,
                     client_time: now,
                     time_since_request_start: started_at.elapsed().as_millis() as f64,
@@ -873,7 +1318,7 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                 }
                 .build()?;
 
-                let mut completion = Self::fetch_completion(
+                let mut stream = Self::fetch_completion(
                     http_client,
                     api_url,
                     bearer_token,
@@ -883,70 +1328,103 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     request,
                 )
                 .await?;
-                let contents = snapshot.text();
-                let cursor_at_end = cursor == snapshot.max_point().to_point_utf16(&snapshot);
-                completion.normalize_document_echo(&contents, cursor_at_end);
-                if completion.text.is_empty() {
+                let is_current = this.update(cx, |this, _cx| this.request_generation == generation)?;
+                if !is_current {
+                    write_cursor_tab_debug(format_args!(
+                        "discarding stale generation {generation} after fetch"
+                    ));
                     return Ok(None);
                 }
-
+                let contents = snapshot.text();
+                let cursor_at_end = cursor == snapshot.max_point().to_point_utf16(&snapshot);
                 let current_line_prefix = snapshot
                     .text_for_range(PointUtf16::new(cursor.row, 0)..cursor)
                     .collect::<String>();
-                let (replacement_range, replacement_text) =
-                    completion.replacement(cursor, &current_line_prefix)?;
-                let start = snapshot.clip_point_utf16(replacement_range.start, Bias::Left);
-                let end = snapshot.clip_point_utf16(replacement_range.end, Bias::Right);
-                let existing_text = snapshot.text_for_range(start..end).collect::<String>();
-                let unminimized_range = start..end;
-                let unminimized_text = replacement_text;
-                let (replacement_range, replacement_text) =
-                    minimize_replacement(unminimized_range.clone(), cursor, &existing_text, replacement_text);
+                let prepared_edits = prepared_edits_from_stream(
+                    &mut stream,
+                    &snapshot,
+                    cursor,
+                    &current_line_prefix,
+                    &contents,
+                    cursor_at_end,
+                )?;
+                if prepared_edits.is_empty() {
+                    return Ok(None);
+                }
                 log::debug!(
-                    "Cursor Tab normalized completion: cursor={cursor:?}, current_line_prefix={current_line_prefix:?}, existing_text={existing_text:?}, initial_range={unminimized_range:?}, initial_text={unminimized_text:?}, final_range={replacement_range:?}, final_text={replacement_text:?}"
+                    "Cursor Tab prepared edits: cursor={cursor:?}, current_line_prefix={current_line_prefix:?}, edits={prepared_edits:?}"
                 );
-                if replacement_range.is_empty() && replacement_text.is_empty() {
-                    return Ok(None);
-                }
-                if contains_only_line_breaks_and_indentation(replacement_text) {
-                    return Ok(None);
-                }
-                if repeats_current_line(replacement_text, &current_line_prefix) {
-                    return Ok(None);
-                }
-                let edit_range = if replacement_range.is_empty() {
-                    // A right-biased insertion keeps the live cursor before the preview inlay.
-                    let insertion_anchor = snapshot.anchor_after(replacement_range.start);
-                    insertion_anchor..insertion_anchor
-                } else {
-                    snapshot.anchor_before(replacement_range.start)
-                        ..snapshot.anchor_after(replacement_range.end)
-                };
-                let edits: Arc<[(Range<Anchor>, Arc<str>)]> =
-                    Arc::from([(edit_range, Arc::from(replacement_text))]);
+                let cursor_target = cursor_target_from_stream(&stream);
+                let should_retrigger = cursor_target.is_none_or(|target| target.should_retrigger_cpp);
+                let predicted_cursor_position = cursor_target
+                    .filter(|target| target.should_retrigger_cpp)
+                    .and_then(|target| {
+                        map_cursor_target(
+                            &snapshot,
+                            &prepared_edits,
+                            &current_file_path,
+                            target,
+                        )
+                    });
+                log::debug!(
+                    "Cursor Tab cursor target mapping: target={:?}, edits={:?}, mapped={:?}",
+                    cursor_target.map(|target| (
+                        target.relative_path.as_str(),
+                        target.line_number_one_indexed,
+                        target.expected_content.as_str(),
+                        target.should_retrigger_cpp,
+                    )),
+                    prepared_edits,
+                    predicted_cursor_position,
+                );
+                write_cursor_tab_debug(format_args!(
+                    "cursor target mapping: target={:?}, edits={prepared_edits:?}, mapped={predicted_cursor_position:?}",
+                    cursor_target.map(|target| (
+                        target.relative_path.as_str(),
+                        target.line_number_one_indexed,
+                        target.expected_content.as_str(),
+                        target.should_retrigger_cpp,
+                    )),
+                ));
+                let edits = anchors_from_prepared_edits(&snapshot, &prepared_edits);
                 let edit_preview = buffer
                     .read_with(cx, |buffer, cx| buffer.preview_edits(edits.clone(), cx))
                     .await;
                 Ok(Some(CurrentCompletion {
                     snapshot,
                     edits,
+                    cursor_position: predicted_cursor_position,
+                    should_retrigger,
                     edit_preview,
                 }))
             }
             .await;
 
             this.update(cx, |this, cx| {
+                if this.request_generation != generation {
+                    write_cursor_tab_debug(format_args!(
+                        "discarding stale generation {generation} before store, current={}",
+                        this.request_generation
+                    ));
+                    return;
+                }
                 this.pending_request = None;
                 if let Ok(Some(completion)) = &result {
                     log::debug!(
-                        "Cursor Tab storing completion: edits={}, text={:?}",
+                        "Cursor Tab storing completion: generation={generation}, edits={}, text={:?}, cursor_position={:?}",
                         completion.edits.len(),
                         completion
                             .edits
                             .iter()
                             .map(|(_, text)| text.as_ref())
-                            .collect::<Vec<_>>()
+                            .collect::<Vec<_>>(),
+                        completion.cursor_position,
                     );
+                    write_cursor_tab_debug(format_args!(
+                        "storing completion: generation={generation}, edits={}, cursor_position={:?}",
+                        completion.edits.len(),
+                        completion.cursor_position,
+                    ));
                     this.current_completion = Some(completion.clone());
                 } else if let Err(error) = &result {
                     log::debug!("Cursor Tab did not store completion: error={error:#}");
@@ -960,11 +1438,18 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
     }
 
     fn accept(&mut self, _cx: &mut Context<Self>) {
+        self.retrigger_after_accept = self
+            .current_completion
+            .as_ref()
+            .is_none_or(|completion| completion.should_retrigger);
+        self.request_generation = self.request_generation.wrapping_add(1);
         self.pending_request = None;
         self.current_completion = None;
     }
 
     fn discard(&mut self, _reason: EditPredictionDiscardReason, _cx: &mut Context<Self>) {
+        self.retrigger_after_accept = true;
+        self.request_generation = self.request_generation.wrapping_add(1);
         self.pending_request = None;
         self.current_completion = None;
     }
@@ -984,17 +1469,23 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
             return None;
         };
         log::debug!(
-            "Cursor Tab suggest: edits={}, text={:?}",
+            "Cursor Tab suggest: edits={}, text={:?}, cursor_position={:?}",
             edits.len(),
             edits
                 .iter()
                 .map(|(_, text)| text.as_ref())
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            completion.cursor_position,
         );
+        write_cursor_tab_debug(format_args!(
+            "suggest: edits={}, cursor_position={:?}",
+            edits.len(),
+            completion.cursor_position,
+        ));
         Some(EditPrediction::Local {
             id: None,
             edits,
-            cursor_position: None,
+            cursor_position: completion.cursor_position,
             edit_preview: Some(completion.edit_preview.clone()),
         })
     }
@@ -1082,11 +1573,313 @@ mod tests {
     }
 
     #[test]
+    fn maps_cursor_target_to_offset_inside_replacement() {
+        let replacement =
+            "     musicVideo: {},\n   }, \n  {\n    artists: [\"\"],\n    address: \"\",";
+        let target = CursorPredictionTarget {
+            relative_path: "src/app/common/locations.ts".into(),
+            line_number_one_indexed: 30,
+            expected_content: "artists: [\"\"],\naddress: \"\",".into(),
+            should_retrigger_cpp: true,
+        };
+
+        assert_eq!(
+            cursor_target_offset(26, replacement, "src/app/common/locations.ts", &target,),
+            Some(replacement.len())
+        );
+        assert_eq!(
+            cursor_target_offset(26, replacement, "other.ts", &target),
+            None
+        );
+    }
+
+    #[test]
+    fn ignores_cursor_target_when_expected_content_does_not_match() {
+        let replacement = "    artists: [\"The National\"],\n    address: \"Brooklyn\",";
+        let target = CursorPredictionTarget {
+            relative_path: "src/app/common/locations.ts".into(),
+            line_number_one_indexed: 30,
+            expected_content: "artists: [\"\"],\naddress: \"\",".into(),
+            should_retrigger_cpp: true,
+        };
+
+        assert_eq!(
+            cursor_target_offset(29, replacement, "src/app/common/locations.ts", &target),
+            None
+        );
+    }
+
+    #[test]
+    fn skips_refresh_after_accept_when_retrigger_is_disabled() {
+        assert!(!should_refresh_for_trigger(
+            EditPredictionRequestTrigger::PredictionAccepted,
+            false,
+        ));
+        assert!(should_refresh_for_trigger(
+            EditPredictionRequestTrigger::PredictionAccepted,
+            true,
+        ));
+        assert!(should_refresh_for_trigger(
+            EditPredictionRequestTrigger::PredictionPartiallyAccepted,
+            false,
+        ));
+        assert!(should_refresh_for_trigger(
+            EditPredictionRequestTrigger::BufferEdit,
+            false,
+        ));
+    }
+
+    #[test]
+    fn accumulate_stream_frames_stops_at_done_stream_and_strips_leading_eol() -> Result<()> {
+        let first = StreamCppResponse {
+            text: "\nfirst".into(),
+            should_remove_leading_eol: Some(true),
+            ..Default::default()
+        };
+        let done = StreamCppResponse {
+            text: " edit".into(),
+            done_stream: Some(true),
+            cursor_prediction_target: Some(CursorPredictionTarget {
+                relative_path: "src/main.rs".into(),
+                line_number_one_indexed: 2,
+                expected_content: "first edit".into(),
+                should_retrigger_cpp: false,
+            }),
+            ..Default::default()
+        };
+        let stale = StreamCppResponse {
+            text: "stale".into(),
+            ..Default::default()
+        };
+
+        let stream = accumulate_stream_frames([
+            ConnectFrame::Message(Box::new(first)),
+            ConnectFrame::Message(Box::new(done)),
+            ConnectFrame::Message(Box::new(stale)),
+        ])?;
+
+        assert_eq!(stream.edits.len(), 1);
+        assert_eq!(stream.edits[0].text, "first edit");
+        assert_eq!(
+            stream
+                .cursor_prediction_target
+                .as_ref()
+                .map(|target| target.should_retrigger_cpp),
+            Some(false)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accumulate_stream_frames_finalizes_edits_at_done_edit() -> Result<()> {
+        let first_range = StreamCppResponse {
+            begin_edit: Some(true),
+            range_to_replace: Some(RangeToReplace {
+                start_line: 10,
+                end_line: 11,
+                start_column: 0,
+                end_column: 0,
+            }),
+            binding_id: Some("edit-1".into()),
+            ..Default::default()
+        };
+        let first_text = StreamCppResponse {
+            text: "first".into(),
+            ..Default::default()
+        };
+        let first_cursor = StreamCppResponse {
+            cursor_prediction_target: Some(CursorPredictionTarget {
+                relative_path: "src/main.rs".into(),
+                line_number_one_indexed: 11,
+                expected_content: "first edit".into(),
+                should_retrigger_cpp: true,
+            }),
+            ..Default::default()
+        };
+        let first_done = StreamCppResponse {
+            text: " edit".into(),
+            done_edit: Some(true),
+            ..Default::default()
+        };
+        let second_begin = StreamCppResponse {
+            begin_edit: Some(true),
+            range_to_replace: Some(RangeToReplace {
+                start_line: 20,
+                end_line: 21,
+                start_column: 0,
+                end_column: 1,
+            }),
+            text: "\n}".into(),
+            should_remove_leading_eol: Some(true),
+            binding_id: Some("edit-2".into()),
+            done_edit: Some(true),
+            done_stream: Some(true),
+            ..Default::default()
+        };
+
+        let stream = accumulate_stream_frames([
+            ConnectFrame::Message(Box::new(first_range)),
+            ConnectFrame::Message(Box::new(first_text)),
+            ConnectFrame::Message(Box::new(first_cursor)),
+            ConnectFrame::Message(Box::new(first_done)),
+            ConnectFrame::Message(Box::new(second_begin)),
+        ])?;
+
+        assert_eq!(stream.edits.len(), 2);
+        assert_eq!(stream.edits[0].text, "first edit");
+        assert_eq!(stream.edits[0].binding_id.as_deref(), Some("edit-1"));
+        assert_eq!(
+            stream.edits[0].range.map(|range| range.start_line),
+            Some(10)
+        );
+        assert_eq!(
+            stream.edits[0]
+                .cursor_prediction_target
+                .as_ref()
+                .map(|target| target.line_number_one_indexed),
+            Some(11)
+        );
+        assert_eq!(stream.edits[1].text, "}");
+        assert_eq!(stream.edits[1].binding_id.as_deref(), Some("edit-2"));
+        assert_eq!(
+            stream.edits[1].range.map(|range| range.start_line),
+            Some(20)
+        );
+        assert_eq!(
+            stream
+                .cursor_prediction_target
+                .as_ref()
+                .map(|target| target.line_number_one_indexed),
+            Some(11)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accumulate_stream_frames_keeps_cursor_target_between_edits() -> Result<()> {
+        let first = StreamCppResponse {
+            range_to_replace: Some(RangeToReplace {
+                start_line: 1,
+                end_line: 1,
+                start_column: 0,
+                end_column: 1,
+            }),
+            text: "one".into(),
+            done_edit: Some(true),
+            ..Default::default()
+        };
+        let between = StreamCppResponse {
+            cursor_prediction_target: Some(CursorPredictionTarget {
+                relative_path: "src/main.rs".into(),
+                line_number_one_indexed: 4,
+                expected_content: "two".into(),
+                should_retrigger_cpp: false,
+            }),
+            ..Default::default()
+        };
+        let second = StreamCppResponse {
+            begin_edit: Some(true),
+            range_to_replace: Some(RangeToReplace {
+                start_line: 3,
+                end_line: 3,
+                start_column: 0,
+                end_column: 1,
+            }),
+            text: "two".into(),
+            done_edit: Some(true),
+            done_stream: Some(true),
+            ..Default::default()
+        };
+
+        let stream = accumulate_stream_frames([
+            ConnectFrame::Message(Box::new(first)),
+            ConnectFrame::Message(Box::new(between)),
+            ConnectFrame::Message(Box::new(second)),
+        ])?;
+
+        assert_eq!(stream.edits.len(), 2);
+        assert!(stream.edits[0].cursor_prediction_target.is_none());
+        assert!(stream.edits[1].cursor_prediction_target.is_none());
+        assert_eq!(
+            stream
+                .cursor_prediction_target
+                .as_ref()
+                .map(|target| (target.line_number_one_indexed, target.should_retrigger_cpp)),
+            Some((4, false))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn should_remove_leading_eol_applies_to_the_following_edit() -> Result<()> {
+        let flag = StreamCppResponse {
+            should_remove_leading_eol: Some(true),
+            ..Default::default()
+        };
+        let begin = StreamCppResponse {
+            begin_edit: Some(true),
+            range_to_replace: Some(RangeToReplace {
+                start_line: 8,
+                end_line: 8,
+                start_column: 0,
+                end_column: 1,
+            }),
+            text: "\n}".into(),
+            done_edit: Some(true),
+            done_stream: Some(true),
+            ..Default::default()
+        };
+
+        let stream = accumulate_stream_frames([
+            ConnectFrame::Message(Box::new(flag)),
+            ConnectFrame::Message(Box::new(begin)),
+        ])?;
+
+        assert_eq!(stream.edits.len(), 1);
+        assert_eq!(stream.edits[0].text, "}");
+        Ok(())
+    }
+
+    #[test]
+    fn current_file_history_path_matches_current_file() {
+        assert_eq!(
+            cursor_relative_history_path(
+                "cantopop-map/src/app/common/locations.ts",
+                Some("cantopop-map/src/app/common/locations.ts"),
+                "src/app/common/locations.ts",
+            ),
+            "src/app/common/locations.ts"
+        );
+        assert_eq!(
+            cursor_relative_history_path(
+                "src/app/common/locations.ts",
+                Some("cantopop-map/src/app/common/locations.ts"),
+                "src/app/common/locations.ts",
+            ),
+            "src/app/common/locations.ts"
+        );
+        assert_eq!(
+            cursor_relative_history_path(
+                "cantopop-map/src/other.ts",
+                Some("cantopop-map/src/app/common/locations.ts"),
+                "src/app/common/locations.ts",
+            ),
+            "src/other.ts"
+        );
+        assert_eq!(
+            cursor_relative_history_path("external/lib.rs", None, "src/main.rs"),
+            "external/lib.rs"
+        );
+    }
+
+    #[test]
     fn legacy_completion_replaces_from_suggestion_start_line_to_cursor() -> Result<()> {
         let completion = CursorTabCompletion {
             text: "console.log(\"hello world\")".into(),
             range: None,
             suggestion_start_line: Some(3),
+            cursor_prediction_target: None,
+            ..Default::default()
         };
 
         let (range, text) = completion.replacement(PointUtf16::new(3, 11), "different prefix")?;
@@ -1108,6 +1901,8 @@ mod tests {
                 end_column: 5,
             }),
             suggestion_start_line: Some(3),
+            cursor_prediction_target: None,
+            ..Default::default()
         };
 
         let (range, text) = completion.replacement(PointUtf16::new(3, 11), "ignored")?;
@@ -1129,6 +1924,8 @@ mod tests {
                 end_column: 0,
             }),
             suggestion_start_line: None,
+            cursor_prediction_target: None,
+            ..Default::default()
         };
 
         let (range, text) = completion.replacement(PointUtf16::new(13, 1), "}")?;
@@ -1150,6 +1947,8 @@ mod tests {
                 end_column: 0,
             }),
             suggestion_start_line: None,
+            cursor_prediction_target: None,
+            ..Default::default()
         };
 
         let (range, text) = completion.replacement(PointUtf16::new(16, 2), "  ")?;
@@ -1166,6 +1965,8 @@ mod tests {
             text: "console.log(\"hello world\");".into(),
             range: None,
             suggestion_start_line: None,
+            cursor_prediction_target: None,
+            ..Default::default()
         };
 
         let cursor = PointUtf16::new(3, 10);
@@ -1183,6 +1984,8 @@ mod tests {
             text: "g(\"hello world\");".into(),
             range: None,
             suggestion_start_line: None,
+            cursor_prediction_target: None,
+            ..Default::default()
         };
 
         let cursor = PointUtf16::new(3, 10);
@@ -1233,6 +2036,8 @@ mod tests {
                 end_column: 0,
             }),
             suggestion_start_line: None,
+            cursor_prediction_target: None,
+            ..Default::default()
         };
         let cursor = PointUtf16::new(0, 8);
 
@@ -1255,6 +2060,8 @@ mod tests {
                 end_column: 0,
             }),
             suggestion_start_line: None,
+            cursor_prediction_target: None,
+            ..Default::default()
         };
         let cursor = PointUtf16::new(6, 55);
 
@@ -1301,6 +2108,8 @@ mod tests {
                 end_column: 0,
             }),
             suggestion_start_line: None,
+            cursor_prediction_target: None,
+            ..Default::default()
         };
 
         completion.normalize_document_echo(contents, true);
@@ -1320,6 +2129,8 @@ mod tests {
                 end_column: 0,
             }),
             suggestion_start_line: None,
+            cursor_prediction_target: None,
+            ..Default::default()
         };
 
         completion.normalize_document_echo(contents, true);
@@ -1341,6 +2152,8 @@ mod tests {
                 end_column: 0,
             }),
             suggestion_start_line: None,
+            cursor_prediction_target: None,
+            ..Default::default()
         };
 
         completion.normalize_document_echo(&contents, true);
