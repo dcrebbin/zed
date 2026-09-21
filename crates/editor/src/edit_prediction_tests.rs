@@ -1565,6 +1565,28 @@ fn accept_completion(cx: &mut EditorTestContext) {
     })
 }
 
+#[gpui::test]
+async fn test_cursor_only_prediction_moves_then_accepts_bracket_repair(
+    cx: &mut gpui::TestAppContext,
+) {
+    init_test(cx, |_| {});
+    let mut cx = EditorTestContext::new(cx).await;
+    let provider = cx.new(|_| FakeEditPredictionDelegate::default());
+    assign_editor_completion_provider(provider.clone(), &mut cx);
+    cx.set_state("artists: [\"\"],\ncontributors: { song: {}, musicVideo: {} },ˇ");
+    propose_edits_with_cursor_position::<usize>(&provider, vec![], Some(0), &mut cx);
+    cx.update_editor(|editor, window, cx| editor.update_visible_edit_prediction(window, cx));
+    assert_editor_active_move_completion(&mut cx, |snapshot, target| {
+        assert_eq!(target.to_point(&snapshot), Point::new(0, 0));
+    });
+    accept_completion(&mut cx);
+    cx.assert_editor_state("ˇartists: [\"\"],\ncontributors: { song: {}, musicVideo: {} },");
+    propose_edits(&provider, vec![(0..0, "{")], &mut cx);
+    cx.update_editor(|editor, window, cx| editor.update_visible_edit_prediction(window, cx));
+    accept_completion(&mut cx);
+    cx.assert_editor_state("{ˇartists: [\"\"],\ncontributors: { song: {}, musicVideo: {} },");
+}
+
 fn propose_edits<T: ToOffset>(
     provider: &Entity<FakeEditPredictionDelegate>,
     edits: Vec<(Range<T>, &str)>,

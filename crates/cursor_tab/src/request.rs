@@ -306,7 +306,7 @@ pub struct StreamCppRequestInput {
 }
 
 impl StreamCppRequestInput {
-    pub fn build(self) -> Result<StreamCppRequest> {
+    pub fn build(mut self) -> Result<StreamCppRequest> {
         if self.relative_workspace_path.is_empty() {
             bail!("current file path must not be empty");
         }
@@ -336,6 +336,24 @@ impl StreamCppRequestInput {
         } else {
             "\n"
         };
+        if let Some(contents) = window_current_file(
+            &self.contents,
+            usize::try_from(self.cursor_position.line)?,
+            line_ending,
+        ) {
+            log::debug!(
+                "Cursor Tab windowed current file: original_bytes={}, sent_bytes={}, cursor_line={}, total_lines={total_number_of_lines}",
+                self.contents.len(),
+                contents.len(),
+                self.cursor_position.line,
+            );
+            self.contents = contents;
+            // This request carries its contents directly; the full-file hash no
+            // longer describes the windowed contents and must not accompany them.
+            self.sha_256_hash = None;
+        }
+        let control_token = (self.intent_source.as_deref() == Some("manual_trigger"))
+            .then_some(ControlToken::Op as i32);
         let linter_errors = (!self.linter_errors.is_empty()).then(|| LinterErrors {
             relative_workspace_path: self.relative_workspace_path.clone(),
             errors: self.linter_errors,
@@ -359,6 +377,7 @@ impl StreamCppRequestInput {
                 ..Default::default()
             }),
             model_name: self.model_name,
+            control_token,
             linter_errors,
             file_diff_histories: self.file_diff_histories,
             merged_diff_histories: self.merged_diff_histories,
@@ -375,6 +394,38 @@ impl StreamCppRequestInput {
             ..Default::default()
         })
     }
+}
+
+fn window_current_file(contents: &str, cursor_line: usize, line_ending: &str) -> Option<String> {
+    const MIN_UTF16_LENGTH: usize = 50_000;
+    const CONTEXT_LINE_COUNT: usize = 600;
+    if contents.encode_utf16().take(MIN_UTF16_LENGTH).count() < MIN_UTF16_LENGTH {
+        return None;
+    }
+    let lines = contents.split(line_ending).collect::<Vec<_>>();
+    let start = cursor_line
+        .saturating_sub(CONTEXT_LINE_COUNT / 2)
+        .min(lines.len().saturating_sub(CONTEXT_LINE_COUNT));
+    let end = (start + CONTEXT_LINE_COUNT).min(lines.len());
+    if start == 0 && end == lines.len() {
+        return None;
+    }
+    // Cursor blanks distant lines rather than removing them, so cursor and
+    // response coordinates remain absolute even for a window near EOF.
+    Some(
+        lines
+            .into_iter()
+            .enumerate()
+            .map(|(row, line)| {
+                if (start..end).contains(&row) {
+                    line
+                } else {
+                    ""
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(line_ending),
+    )
 }
 
 fn validate_selection(selection: Selection, line_count: i32) -> Result<()> {
@@ -504,6 +555,83 @@ mod tests {
         let mut input = request_input("fn main() {}\n");
         input.time_at_request_send = f64::NAN;
         assert!(input.build().is_err());
+    }
+
+    #[test]
+    fn large_file_windows_preserve_absolute_coordinates() -> Result<()> {
+        for line_ending in ["\n", "\r\n"] {
+            let lines = (0..1_000)
+                .map(|row| format!("{row}: {}", "🎵".repeat(30)))
+                .collect::<Vec<_>>();
+            let contents = lines.join(line_ending);
+            for (cursor_line, expected_window) in [
+                (0, 0..600),
+                (28, 0..600),
+                (500, 200..800),
+                (999, 400..1_000),
+            ] {
+                let mut input = request_input(&contents);
+                input.cursor_position = CursorPosition {
+                    line: cursor_line,
+                    column: 3,
+                };
+                input.sha_256_hash = Some("full-file-hash".into());
+                let request = input.build()?;
+                let file = request
+                    .current_file
+                    .ok_or_else(|| anyhow!("missing current file"))?;
+                assert_eq!(
+                    file.cursor_position,
+                    Some(CursorPosition {
+                        line: cursor_line,
+                        column: 3
+                    })
+                );
+                assert_eq!(file.contents_start_at_line, 0);
+                assert_eq!(file.total_number_of_lines, 1_000);
+                assert_eq!(file.line_ending.as_deref(), Some(line_ending));
+                assert!(file.sha_256_hash.is_none());
+                assert!(!file.rely_on_filesync);
+                let sent_lines = file.contents.split(line_ending).collect::<Vec<_>>();
+                assert_eq!(sent_lines.len(), lines.len());
+                for (row, (sent, original)) in sent_lines.iter().zip(&lines).enumerate() {
+                    assert_eq!(
+                        *sent,
+                        if expected_window.contains(&row) {
+                            original.as_str()
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn window_threshold_uses_utf16_units_instead_of_bytes() -> Result<()> {
+        let contents = vec!["復古".repeat(12); 1_000].join("\n");
+        assert!(contents.len() > 50_000);
+        let request = request_input(&contents).build()?;
+        let file = request
+            .current_file
+            .ok_or_else(|| anyhow!("missing current file"))?;
+        assert_eq!(file.contents, contents);
+        Ok(())
+    }
+
+    #[test]
+    fn manual_trigger_requests_operation_control_token() -> Result<()> {
+        for (source, expected) in [
+            ("manual_trigger", Some(ControlToken::Op as i32)),
+            ("editor_change", None),
+        ] {
+            let mut input = request_input("const values = [\n");
+            input.intent_source = Some(source.into());
+            assert_eq!(input.build()?.control_token, expected);
+        }
+        Ok(())
     }
 
     #[test]

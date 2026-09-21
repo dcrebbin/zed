@@ -9,8 +9,8 @@ use gpui::{App, AppContext as _, Context, Entity, Global, SharedString, Task};
 use http_client::HttpClient;
 use icons::IconName;
 use language::{
-    Anchor, Bias, Buffer, BufferSnapshot, EditPreview, Point, PointUtf16, ToPointUtf16, Unclipped,
-    language_settings::all_language_settings,
+    Anchor, Bias, Buffer, BufferSnapshot, EditPreview, Point, PointUtf16, TextBufferSnapshot,
+    ToOffset, ToPointUtf16, Unclipped, language_settings::all_language_settings,
 };
 use language_model::{ApiKeyState, AuthenticateError, EnvVar, env_var};
 use lsp::DiagnosticSeverity;
@@ -294,7 +294,12 @@ struct CurrentCompletion {
 
 impl CurrentCompletion {
     fn interpolate(&self, snapshot: &BufferSnapshot) -> Option<Vec<(Range<Anchor>, Arc<str>)>> {
-        interpolate_edits(&self.snapshot, snapshot, &self.edits).filter(|edits| !edits.is_empty())
+        if self.edits.is_empty() && self.snapshot.version() != snapshot.version() {
+            return None;
+        }
+        interpolate_edits(&self.snapshot, snapshot, &self.edits).filter(|edits| {
+            !edits.is_empty() || (self.edits.is_empty() && self.cursor_position.is_some())
+        })
     }
 }
 
@@ -733,20 +738,35 @@ fn prepared_edits_from_stream(
 }
 
 fn anchors_from_prepared_edits(
-    snapshot: &BufferSnapshot,
+    snapshot: &TextBufferSnapshot,
     prepared_edits: &[(Range<PointUtf16>, String)],
 ) -> Arc<[(Range<Anchor>, Arc<str>)]> {
     prepared_edits
         .iter()
-        .map(|(replacement_range, replacement_text)| {
-            let edit_range = if replacement_range.is_empty() {
-                let insertion_anchor = snapshot.anchor_after(replacement_range.start);
-                insertion_anchor..insertion_anchor
-            } else {
-                snapshot.anchor_before(replacement_range.start)
-                    ..snapshot.anchor_after(replacement_range.end)
-            };
-            (edit_range, Arc::from(replacement_text.as_str()))
+        .flat_map(|(replacement_range, replacement_text)| {
+            let start_offset = replacement_range.start.to_offset(snapshot);
+            let existing_text = snapshot
+                .text_for_range(replacement_range.clone())
+                .collect::<String>();
+            log::debug!(
+                "Cursor Tab replacement diff: range={replacement_range:?}\n{}",
+                language::unified_diff(&existing_text, replacement_text),
+            );
+            // The server sends rewrite windows containing unchanged neighbors. Keep
+            // those neighbors anchored in place instead of replacing the whole window.
+            language::text_diff(&existing_text, replacement_text)
+                .into_iter()
+                .map(move |(range, text)| {
+                    let start = start_offset + range.start;
+                    let end = start_offset + range.end;
+                    let edit_range = if range.is_empty() {
+                        let anchor = snapshot.anchor_after(start);
+                        anchor..anchor
+                    } else {
+                        snapshot.anchor_before(start)..snapshot.anchor_after(end)
+                    };
+                    (edit_range, text)
+                })
         })
         .collect()
 }
@@ -1377,8 +1397,8 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     time_since_request_start: started_at.elapsed().as_millis() as f64,
                     time_at_request_send: now,
                     client_timezone_offset,
-                    supports_cpt: false,
-                    supports_crlf_cpt: false,
+                    supports_cpt: true,
+                    supports_crlf_cpt: true,
                 }
                 .build()?;
 
@@ -1412,15 +1432,12 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     &contents,
                     cursor_at_end,
                 )?;
-                if prepared_edits.is_empty() {
-                    return Ok(None);
-                }
                 log::debug!(
                     "Cursor Tab prepared edits: cursor={cursor:?}, current_line_prefix={current_line_prefix:?}, edits={prepared_edits:?}"
                 );
                 let cursor_target = cursor_target_from_stream(&stream);
                 let should_retrigger = cursor_target.is_none_or(|target| target.should_retrigger_cpp);
-                let predicted_cursor_position = cursor_target.and_then(|target| {
+                let mut predicted_cursor_position = cursor_target.and_then(|target| {
                     map_cursor_target(&snapshot, &prepared_edits, &current_file_path, target)
                 });
                 log::debug!(
@@ -1444,6 +1461,18 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     )),
                 ));
                 let edits = anchors_from_prepared_edits(&snapshot, &prepared_edits);
+                if edits.is_empty() {
+                    predicted_cursor_position = cursor_target.and_then(|target| {
+                        predicted_cursor_in_snapshot(&snapshot, &current_file_path, target, |_| false)
+                    }).filter(|position| position.anchor.to_point_utf16(&snapshot) != cursor);
+                }
+                if edits.is_empty() && predicted_cursor_position.is_none() {
+                    log::debug!("Cursor Tab suppressed no-op: server replacement matches the request snapshot");
+                    write_cursor_tab_debug(format_args!(
+                        "suppressed no-op: generation={generation}, server replacement matches the request snapshot"
+                    ));
+                    return Ok(None);
+                }
                 let edit_preview = buffer
                     .read_with(cx, |buffer, cx| buffer.preview_edits(edits.clone(), cx))
                     .await;
@@ -1514,7 +1543,7 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
     fn suggest(
         &mut self,
         buffer: &Entity<Buffer>,
-        _cursor_position: Anchor,
+        cursor_position: Anchor,
         cx: &mut Context<Self>,
     ) -> Option<EditPrediction> {
         let Some(completion) = self.current_completion.as_ref() else {
@@ -1525,6 +1554,14 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
             log::debug!("Cursor Tab suggest: completion did not interpolate into live buffer");
             return None;
         };
+        if edits.is_empty()
+            && completion.cursor_position.is_some_and(|position| {
+                let snapshot = buffer.read(cx).snapshot();
+                position.anchor.to_offset(&snapshot) == cursor_position.to_offset(&snapshot)
+            })
+        {
+            return None;
+        }
         log::debug!(
             "Cursor Tab suggest: edits={}, text={:?}, cursor_position={:?}",
             edits.len(),
@@ -1551,6 +1588,74 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bracket_repairs_in_large_files_preserve_unchanged_objects() -> Result<()> {
+        let prefix = "// preceding line\n".repeat(5_000);
+        let suffix = "\n  { name: \"another object\" },".repeat(5_000);
+        let fields = "    artists: [\"Zpecial\"],\n    name: \"復古 🎵\",\n    contributors: { song: {}, musicVideo: {} },";
+        let neighbor = "  {\n    artists: [\"Zpecial\"],\n    name: \"復古 🎵\",\n  },";
+        let original_window = format!("{fields}\n{neighbor}");
+        let replacement = format!("  {{\n{fields}\n  }},\n{neighbor}");
+        let original = format!("{prefix}{original_window}{suffix}");
+        let mut buffer =
+            language::TextBuffer::new(Default::default(), language::BufferId::new(1)?, original);
+        let snapshot = buffer.snapshot();
+        let start = prefix.len().to_point_utf16(snapshot);
+        let end = (prefix.len() + original_window.len()).to_point_utf16(snapshot);
+        let edits = anchors_from_prepared_edits(snapshot, &[(start..end, replacement.clone())]);
+
+        assert_eq!(edits.len(), 2);
+        assert!(edits.iter().all(|(range, _)| range.start == range.end));
+        assert!(
+            edits
+                .iter()
+                .all(|(_, text)| !text.contains("artists") && !text.contains("name"))
+        );
+        buffer.edit(edits.iter().cloned());
+        assert_eq!(
+            buffer.snapshot().text(),
+            format!("{prefix}{replacement}{suffix}")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn server_deletion_does_not_copy_unchanged_neighbor() -> Result<()> {
+        let removed =
+            "image: \"placeholder\",\ncontributors: {\n  song: {},\n  musicVideo: {},\n}, \n";
+        let neighbor = "  {\n    artists: [\"Zpecial\"],\n    address: \"Hong Kong\",\n    coordinates: [22.313329, 114.168362],\n    name: \"復古\",";
+        let mut buffer = language::TextBuffer::new(
+            Default::default(),
+            language::BufferId::new(1)?,
+            format!("{removed}{neighbor}"),
+        );
+        let snapshot = buffer.snapshot();
+        let range = PointUtf16::new(0, 0)..snapshot.max_point().to_point_utf16(snapshot);
+        let edits = anchors_from_prepared_edits(snapshot, &[(range, neighbor.into())]);
+
+        assert_eq!(edits.len(), 1);
+        let (range, text) = edits.first().context("missing deletion")?;
+        assert_eq!(
+            range.start.to_offset(snapshot)..range.end.to_offset(snapshot),
+            0..removed.len()
+        );
+        assert!(text.is_empty());
+        buffer.edit(edits.iter().cloned());
+        assert_eq!(buffer.snapshot().text(), neighbor);
+        Ok(())
+    }
+
+    #[test]
+    fn unchanged_rewrite_window_has_no_edits() -> Result<()> {
+        let original = "  { name: \"復古 🎵\" },";
+        let buffer =
+            language::TextBuffer::new(Default::default(), language::BufferId::new(1)?, original);
+        let snapshot = buffer.snapshot();
+        let range = PointUtf16::new(0, 0)..snapshot.max_point().to_point_utf16(snapshot);
+        assert!(anchors_from_prepared_edits(snapshot, &[(range, original.into())]).is_empty());
+        Ok(())
+    }
 
     fn frame(flags: u8, payload: &[u8]) -> Vec<u8> {
         let mut frame = Vec::with_capacity(CONNECT_HEADER_LENGTH + payload.len());

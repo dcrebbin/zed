@@ -35,6 +35,7 @@ pub(super) enum EditPrediction {
     MoveWithin {
         target: Anchor,
         snapshot: BufferSnapshot,
+        is_cursor_prediction: bool,
     },
     /// Move to a specific location in a different editor (not the active one)
     MoveOutside {
@@ -380,8 +381,13 @@ impl Editor {
                 .is_some_and(|provider| provider.accepts_by_line(cx));
 
         match &active_edit_prediction.completion {
-            EditPrediction::MoveWithin { target, .. } => {
+            EditPrediction::MoveWithin {
+                target,
+                is_cursor_prediction,
+                ..
+            } => {
                 let target = *target;
+                let is_cursor_prediction = *is_cursor_prediction;
 
                 if matches!(granularity, EditPredictionGranularity::Full) {
                     if let Some(position_map) = &self.last_position_map {
@@ -428,6 +434,22 @@ impl Editor {
                             selections.select_anchor_ranges([target..target]);
                         },
                     );
+                }
+                if is_cursor_prediction {
+                    let snapshot = self.buffer.read(cx).snapshot(cx);
+                    let cursor = self.selections.newest_anchor().head();
+                    if cursor.to_offset(&snapshot) == target.to_offset(&snapshot) {
+                        if let Some(provider) = self.edit_prediction_provider() {
+                            provider.accept(cx);
+                        }
+                        self.refresh_edit_prediction(
+                            true,
+                            true,
+                            EditPredictionRequestTrigger::PredictionAccepted,
+                            window,
+                            cx,
+                        );
+                    }
                 }
             }
             EditPrediction::MoveOutside { snapshot, target } => {
@@ -966,7 +988,26 @@ impl Editor {
             })
             .collect::<Vec<_>>();
         if edits.is_empty() {
-            return None;
+            let predicted = predicted_cursor_position.filter(|position| position.offset == 0)?;
+            let target = multibuffer.anchor_in_excerpt(predicted.anchor)?;
+            if target.to_offset(&multibuffer) == cursor.to_offset(&multibuffer) {
+                return None;
+            }
+            let (_, snapshot) = multibuffer.anchor_to_buffer_anchor(target)?;
+            provider.did_show(SuggestionDisplayType::Jump, cx);
+            self.stale_edit_prediction_in_menu = None;
+            self.active_edit_prediction = Some(EditPredictionState {
+                inlay_ids: vec![],
+                completion: EditPrediction::MoveWithin {
+                    target,
+                    snapshot: snapshot.clone(),
+                    is_cursor_prediction: true,
+                },
+                completion_id,
+                invalidation_range: None,
+            });
+            cx.notify();
+            return Some(());
         }
 
         let cursor_position = predicted_cursor_position.and_then(|predicted| {
@@ -1024,6 +1065,7 @@ impl Editor {
             EditPrediction::MoveWithin {
                 target: first_edit_start,
                 snapshot: snapshot.clone(),
+                is_cursor_prediction: false,
             }
         } else {
             let show_completions_in_menu = self.has_visible_completions_menu();
@@ -1297,7 +1339,9 @@ impl Editor {
                             .rounded_tl(px(0.))
                             .overflow_hidden()
                             .child(div().px_1p5().child(match &prediction.completion {
-                                EditPrediction::MoveWithin { target, snapshot } => {
+                                EditPrediction::MoveWithin {
+                                    target, snapshot, ..
+                                } => {
                                     use text::ToPoint as _;
                                     if target.text_anchor_in(&snapshot).to_point(snapshot).row
                                         > cursor_point.row
@@ -2461,9 +2505,11 @@ impl Editor {
 
         match &completion.completion {
             EditPrediction::MoveWithin {
-                target, snapshot, ..
+                target,
+                snapshot,
+                is_cursor_prediction,
             } => {
-                if !supports_jump {
+                if !supports_jump && !is_cursor_prediction {
                     return None;
                 }
                 let (target, _) = self.display_snapshot(cx).anchor_to_buffer_anchor(*target)?;
