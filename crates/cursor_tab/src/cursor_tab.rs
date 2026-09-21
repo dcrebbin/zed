@@ -319,10 +319,14 @@ struct StreamAccumulator {
     current_has_content: bool,
     cursor_prediction_target: Option<CursorPredictionTarget>,
     remove_leading_eol: bool,
+    is_multidiff_model: Option<bool>,
 }
 
 impl StreamAccumulator {
     fn apply(&mut self, message: StreamCppResponse) -> bool {
+        if let Some(model) = message.model_info {
+            self.is_multidiff_model = Some(model.is_multidiff_model);
+        }
         if message.begin_edit == Some(true) {
             self.finish_current();
         }
@@ -350,7 +354,8 @@ impl StreamAccumulator {
         if let Some(binding_id) = message.binding_id {
             self.current.binding_id = Some(binding_id);
         }
-        if message.done_edit == Some(true) {
+        // Non-multidiff streams can send the replacement range after done_edit.
+        if message.done_edit == Some(true) && self.is_multidiff_model != Some(false) {
             self.finish_current();
         }
         message.done_stream == Some(true)
@@ -413,20 +418,21 @@ impl CursorTabCompletion {
         current_line_prefix: &str,
     ) -> Result<(Range<Unclipped<PointUtf16>>, &'a str)> {
         if let Some(range) = self.range {
-            let (start_row, end_row) = if range.start_line > 0 && range.end_line >= range.start_line
-            {
-                (
-                    u32::try_from(range.start_line - 1)?,
-                    u32::try_from(range.end_line)?,
-                )
-            } else {
-                (
-                    u32::try_from(range.start_line)?,
-                    u32::try_from(range.end_line)?,
-                )
-            };
-            let start = PointUtf16::new(start_row, u32::try_from(range.start_column)?);
-            let end = PointUtf16::new(end_row, u32::try_from(range.end_column)?);
+            if range.start_line > 0 && range.end_line >= range.start_line {
+                // Cursor's one-based, inclusive line ranges exclude the final newline.
+                // Clipping the column to the line end preserves that separator.
+                let start = PointUtf16::new(u32::try_from(range.start_line - 1)?, 0);
+                let end = PointUtf16::new(u32::try_from(range.end_line - 1)?, u32::MAX);
+                return Ok((Unclipped(start)..Unclipped(end), &self.text));
+            }
+            let start = PointUtf16::new(
+                u32::try_from(range.start_line)?,
+                u32::try_from(range.start_column)?,
+            );
+            let end = PointUtf16::new(
+                u32::try_from(range.end_line)?,
+                u32::try_from(range.end_column)?,
+            );
             if end < start {
                 if !current_line_prefix.is_empty()
                     && let Some(suffix) = self.text.strip_prefix(current_line_prefix)
@@ -494,36 +500,69 @@ fn contains_only_line_breaks_and_indentation(text: &str) -> bool {
     (text.contains('\n') || text.contains('\r')) && text.chars().all(char::is_whitespace)
 }
 
+const CURSOR_TARGET_SEARCH_RADIUS: u32 = 32;
+
 fn cursor_target_offset(
     replacement_start_row: u32,
     replacement_text: &str,
     current_file_path: &str,
     target: &CursorPredictionTarget,
 ) -> Option<usize> {
-    if target.relative_path != current_file_path || target.line_number_one_indexed <= 0 {
+    if target.relative_path != current_file_path {
         return None;
     }
 
-    let target_row = u32::try_from(target.line_number_one_indexed - 1).ok()?;
-    let relative_row = usize::try_from(target_row.checked_sub(replacement_start_row)?).ok()?;
     let expected_lines = target.expected_content.lines().collect::<Vec<_>>();
     if expected_lines.is_empty() {
         return None;
     }
 
     let replacement_lines = replacement_text.split('\n').collect::<Vec<_>>();
+    let relative_row = target
+        .line_number_one_indexed
+        .checked_sub(1)
+        .and_then(|target_row| u32::try_from(target_row).ok())
+        .and_then(|target_row| target_row.checked_sub(replacement_start_row))
+        .and_then(|relative_row| usize::try_from(relative_row).ok());
+    if let Some(relative_row) = relative_row
+        && let Some(offset) = offset_of_expected_lines(
+            replacement_text,
+            &replacement_lines,
+            relative_row,
+            &expected_lines,
+        )
+    {
+        return Some(offset);
+    }
+
+    (0..replacement_lines.len()).find_map(|relative_row| {
+        offset_of_expected_lines(
+            replacement_text,
+            &replacement_lines,
+            relative_row,
+            &expected_lines,
+        )
+    })
+}
+
+fn offset_of_expected_lines(
+    replacement_text: &str,
+    replacement_lines: &[&str],
+    relative_row: usize,
+    expected_lines: &[&str],
+) -> Option<usize> {
     let matched_lines = replacement_lines.get(relative_row..)?;
     if matched_lines.len() < expected_lines.len()
         || !matched_lines
             .iter()
-            .zip(&expected_lines)
+            .zip(expected_lines)
             .all(|(actual, expected)| actual.trim() == expected.trim())
     {
         return None;
     }
 
     let last_index = relative_row + expected_lines.len() - 1;
-    let last_actual = replacement_lines[last_index];
+    let last_actual = replacement_lines.get(last_index)?;
     let last_expected = expected_lines.last()?.trim();
     let column = last_actual.find(last_expected)? + last_expected.len();
     let line_start = replacement_text
@@ -541,64 +580,77 @@ fn should_refresh_for_trigger(
     trigger != EditPredictionRequestTrigger::PredictionAccepted || retrigger_after_accept
 }
 
-fn predicted_cursor_position(
+fn predicted_cursor_in_snapshot(
     snapshot: &BufferSnapshot,
-    replacement_range: &Range<PointUtf16>,
-    replacement_text: &str,
     current_file_path: &str,
     target: &CursorPredictionTarget,
+    skip_row: impl Fn(u32) -> bool,
 ) -> Option<PredictedCursorPosition> {
-    if let Some(offset) = cursor_target_offset(
-        replacement_range.start.row,
-        replacement_text,
-        current_file_path,
-        target,
-    ) {
-        return Some(PredictedCursorPosition::new(
-            snapshot.anchor_before(replacement_range.start),
-            offset,
-        ));
-    }
-
     if target.relative_path != current_file_path || target.line_number_one_indexed <= 0 {
         return None;
     }
-    let target_row = u32::try_from(target.line_number_one_indexed - 1).ok()?;
-    if target_row >= replacement_range.start.row && target_row < replacement_range.end.row {
-        return None;
-    }
     let expected_lines = target.expected_content.lines().collect::<Vec<_>>();
-    if expected_lines.is_empty() || target_row > snapshot.max_point().row {
+    if expected_lines.is_empty() {
         return None;
     }
-    let end_row = target_row
-        .saturating_add(u32::try_from(expected_lines.len()).ok()?.saturating_sub(1))
-        .min(snapshot.max_point().row);
+    let target_row = u32::try_from(target.line_number_one_indexed - 1).ok()?;
+    let max_row = snapshot.max_point().row;
+    let search_start = target_row.saturating_sub(CURSOR_TARGET_SEARCH_RADIUS);
+    let search_end = target_row
+        .saturating_add(CURSOR_TARGET_SEARCH_RADIUS)
+        .min(max_row);
+
+    let mut best: Option<(u32, Point)> = None;
+    for row in search_start..=search_end {
+        if skip_row(row) {
+            continue;
+        }
+        let Some(point) = snapshot_match_at_row(snapshot, row, &expected_lines) else {
+            continue;
+        };
+        let distance = row.abs_diff(target_row);
+        if best.is_none_or(|(best_distance, _)| distance < best_distance) {
+            best = Some((distance, point));
+        }
+    }
+    best.map(|(_, point)| PredictedCursorPosition::at_anchor(snapshot.anchor_before(point)))
+}
+
+fn snapshot_match_at_row(
+    snapshot: &BufferSnapshot,
+    start_row: u32,
+    expected_lines: &[&str],
+) -> Option<Point> {
+    let max_row = snapshot.max_point().row;
+    if start_row > max_row {
+        return None;
+    }
+    let end_row = start_row
+        .saturating_add(u32::try_from(expected_lines.len().saturating_sub(1)).ok()?)
+        .min(max_row);
     let actual_text = snapshot
-        .text_for_range(Point::new(target_row, 0)..Point::new(end_row, snapshot.line_len(end_row)))
+        .text_for_range(Point::new(start_row, 0)..Point::new(end_row, snapshot.line_len(end_row)))
         .collect::<String>();
     let actual_lines = actual_text.lines().collect::<Vec<_>>();
     if actual_lines.len() < expected_lines.len()
         || !actual_lines
             .iter()
-            .zip(&expected_lines)
+            .zip(expected_lines)
             .all(|(actual, expected)| actual.trim() == expected.trim())
     {
         return None;
     }
 
     let last_expected = expected_lines.last()?.trim();
-    let last_row = target_row
+    let last_row = start_row
         .saturating_add(u32::try_from(expected_lines.len().saturating_sub(1)).unwrap_or(u32::MAX));
     let last_actual = actual_lines.last()?;
     let column = last_actual
         .find(last_expected)
         .map(|index| u32::try_from(index + last_expected.len()).unwrap_or(u32::MAX))
         .unwrap_or(0)
-        .min(snapshot.line_len(last_row.min(snapshot.max_point().row)));
-    Some(PredictedCursorPosition::at_anchor(snapshot.anchor_before(
-        Point::new(last_row.min(snapshot.max_point().row), column),
-    )))
+        .min(snapshot.line_len(last_row.min(max_row)));
+    Some(Point::new(last_row.min(max_row), column))
 }
 
 fn cursor_target_from_stream(stream: &CursorTabStream) -> Option<&CursorPredictionTarget> {
@@ -617,8 +669,18 @@ fn map_cursor_target(
     current_file_path: &str,
     target: &CursorPredictionTarget,
 ) -> Option<PredictedCursorPosition> {
-    prepared_edits.iter().find_map(|(range, text)| {
-        predicted_cursor_position(snapshot, range, text, current_file_path, target)
+    if let Some(position) = prepared_edits.iter().find_map(|(range, text)| {
+        cursor_target_offset(range.start.row, text, current_file_path, target)
+            .map(|offset| PredictedCursorPosition::new(snapshot.anchor_before(range.start), offset))
+    }) {
+        return Some(position);
+    }
+
+    predicted_cursor_in_snapshot(snapshot, current_file_path, target, |row| {
+        prepared_edits.iter().any(|(range, _)| {
+            row >= range.start.row
+                && (row < range.end.row || (row == range.end.row && range.end.column > 0))
+        })
     })
 }
 
@@ -776,6 +838,7 @@ fn accumulate_stream_frames(
         current_has_content: false,
         cursor_prediction_target: None,
         remove_leading_eol: false,
+        is_multidiff_model: None,
     };
     for frame in frames {
         match frame {
@@ -944,6 +1007,7 @@ impl CursorTabEditPredictionDelegate {
                 code_results.push(CodeResult {
                     code_block: Some(CodeBlock {
                         relative_workspace_path: path.clone(),
+                        file_contents: None,
                         range: Some(CodeRange {
                             start_position: Some(Position {
                                 line: i32::try_from(start_row).unwrap_or(i32::MAX),
@@ -957,7 +1021,7 @@ impl CursorTabEditPredictionDelegate {
                         }),
                         contents: excerpt.text.to_string(),
                     }),
-                    score: 1.0 / (excerpt.order.saturating_add(1) as f64),
+                    score: 1.0 / (excerpt.order.saturating_add(1) as f32),
                 });
             }
 
@@ -1356,16 +1420,9 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                 );
                 let cursor_target = cursor_target_from_stream(&stream);
                 let should_retrigger = cursor_target.is_none_or(|target| target.should_retrigger_cpp);
-                let predicted_cursor_position = cursor_target
-                    .filter(|target| target.should_retrigger_cpp)
-                    .and_then(|target| {
-                        map_cursor_target(
-                            &snapshot,
-                            &prepared_edits,
-                            &current_file_path,
-                            target,
-                        )
-                    });
+                let predicted_cursor_position = cursor_target.and_then(|target| {
+                    map_cursor_target(&snapshot, &prepared_edits, &current_file_path, target)
+                });
                 log::debug!(
                     "Cursor Tab cursor target mapping: target={:?}, edits={:?}, mapped={:?}",
                     cursor_target.map(|target| (
@@ -1590,6 +1647,23 @@ mod tests {
         assert_eq!(
             cursor_target_offset(26, replacement, "other.ts", &target),
             None
+        );
+    }
+
+    #[test]
+    fn maps_cursor_target_inside_replacement_even_when_line_number_does_not_align() {
+        let replacement =
+            "     musicVideo: {},\n   }, \n  {\n    artists: [\"\"],\n    address: \"\",";
+        let target = CursorPredictionTarget {
+            relative_path: "src/app/common/locations.ts".into(),
+            line_number_one_indexed: 18,
+            expected_content: "artists: [\"\"],\naddress: \"\",".into(),
+            should_retrigger_cpp: false,
+        };
+
+        assert_eq!(
+            cursor_target_offset(27, replacement, "src/app/common/locations.ts", &target),
+            Some(replacement.len())
         );
     }
 
@@ -1873,6 +1947,57 @@ mod tests {
     }
 
     #[test]
+    fn non_multidiff_keeps_text_with_range_after_done_edit() -> Result<()> {
+        let stream = accumulate_stream_frames(
+            [
+                StreamCppResponse {
+                    model_info: Some(ModelInfo {
+                        is_fused_cursor_prediction_model: true,
+                        is_multidiff_model: false,
+                    }),
+                    text: "  {\n    name: \"復古\",\n  },".into(),
+                    ..Default::default()
+                },
+                StreamCppResponse {
+                    done_edit: Some(true),
+                    ..Default::default()
+                },
+                StreamCppResponse {
+                    range_to_replace: Some(RangeToReplace {
+                        start_line: 2,
+                        end_line: 2,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                StreamCppResponse {
+                    done_stream: Some(true),
+                    ..Default::default()
+                },
+            ]
+            .map(|message| ConnectFrame::Message(Box::new(message))),
+        )?;
+
+        assert_eq!(stream.edits.len(), 1);
+        let edit = stream.edits.first().context("missing replacement")?;
+        let (range, replacement) = edit.replacement(PointUtf16::new(1, 4), "    ")?;
+        let mut document = language::Rope::from(
+            "const locations = [\n    name: \"復古\",\n  { name: \"next\" },\n];",
+        );
+        let start = document.clip_point_utf16(range.start, Bias::Left);
+        let end = document.clip_point_utf16(range.end, Bias::Right);
+        document.replace(
+            document.point_utf16_to_offset(start)..document.point_utf16_to_offset(end),
+            replacement,
+        );
+        assert_eq!(
+            document.to_string(),
+            "const locations = [\n  {\n    name: \"復古\",\n  },\n  { name: \"next\" },\n];"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn legacy_completion_replaces_from_suggestion_start_line_to_cursor() -> Result<()> {
         let completion = CursorTabCompletion {
             text: "console.log(\"hello world\")".into(),
@@ -1907,8 +2032,8 @@ mod tests {
 
         let (range, text) = completion.replacement(PointUtf16::new(3, 11), "ignored")?;
 
-        assert_eq!(range.start.0, PointUtf16::new(0, 2));
-        assert_eq!(range.end.0, PointUtf16::new(4, 5));
+        assert_eq!(range.start.0, PointUtf16::new(0, 0));
+        assert_eq!(range.end.0, PointUtf16::new(3, u32::MAX));
         assert_eq!(text, "replacement");
         Ok(())
     }
@@ -1931,7 +2056,7 @@ mod tests {
         let (range, text) = completion.replacement(PointUtf16::new(13, 1), "}")?;
 
         assert_eq!(range.start.0, PointUtf16::new(10, 0));
-        assert_eq!(range.end.0, PointUtf16::new(14, 0));
+        assert_eq!(range.end.0, PointUtf16::new(13, u32::MAX));
         assert_eq!(text, "replacement loop");
         Ok(())
     }
@@ -1954,7 +2079,7 @@ mod tests {
         let (range, text) = completion.replacement(PointUtf16::new(16, 2), "  ")?;
 
         assert_eq!(range.start.0, PointUtf16::new(15, 0));
-        assert_eq!(range.end.0, PointUtf16::new(17, 0));
+        assert_eq!(range.end.0, PointUtf16::new(16, u32::MAX));
         assert_eq!(text, "    D: Infinity,\n    finish: Infinity\n}");
         Ok(())
     }

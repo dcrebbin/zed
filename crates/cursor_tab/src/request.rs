@@ -211,17 +211,19 @@ pub struct LspSuggestedItems {
 pub struct CodeResult {
     #[prost(message, optional, tag = "1")]
     pub code_block: Option<CodeBlock>,
-    #[prost(double, tag = "2")]
-    pub score: f64,
+    #[prost(float, tag = "2")]
+    pub score: f32,
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct CodeBlock {
     #[prost(string, tag = "1")]
     pub relative_workspace_path: String,
-    #[prost(message, optional, tag = "2")]
+    #[prost(string, optional, tag = "2")]
+    pub file_contents: Option<String>,
+    #[prost(message, optional, tag = "3")]
     pub range: Option<CodeRange>,
-    #[prost(string, tag = "3")]
+    #[prost(string, tag = "4")]
     pub contents: String,
 }
 
@@ -512,5 +514,76 @@ mod tests {
             StreamCppRequest::decode(encoded.as_slice()).unwrap(),
             request
         );
+    }
+
+    #[test]
+    fn code_block_encodes_range_and_contents_at_cursor_field_tags() {
+        let code_block = CodeBlock {
+            relative_workspace_path: "src/app.ts".into(),
+            file_contents: None,
+            range: Some(CodeRange {
+                start_position: Some(Position {
+                    line: 26,
+                    column: 0,
+                }),
+                end_position: Some(Position {
+                    line: 28,
+                    column: 4,
+                }),
+            }),
+            contents: "artists: [Zpecial],".into(),
+        };
+
+        let encoded = code_block.encode_to_vec();
+        assert_eq!(
+            protobuf_field_numbers(&encoded),
+            [1, 3, 4],
+            "Cursor CodeBlock fields are path=1, range=3, contents=4"
+        );
+        assert_eq!(CodeBlock::decode(encoded.as_slice()).unwrap(), code_block);
+
+        let mut input = request_input("export const locations = [\n  {\n");
+        input.code_results.push(CodeResult {
+            code_block: Some(code_block),
+            score: 1.0,
+        });
+        let request = input.build().unwrap();
+        let encoded = request.encode_to_vec();
+        assert_eq!(
+            StreamCppRequest::decode(encoded.as_slice()).unwrap(),
+            request
+        );
+    }
+
+    fn protobuf_field_numbers(bytes: &[u8]) -> Vec<u32> {
+        let mut field_numbers = Vec::new();
+        let mut rest = bytes;
+        while let Some((tag, remaining)) = rest.split_first() {
+            let field_number = u32::from(tag >> 3);
+            let wire_type = tag & 0x07;
+            field_numbers.push(field_number);
+            rest = match wire_type {
+                0 => skip_varint(remaining),
+                1 => remaining.get(8..).unwrap_or(&[]),
+                2 => {
+                    let (length, after_length) = remaining
+                        .split_first()
+                        .map_or((0, remaining), |(length, rest)| (*length as usize, rest));
+                    after_length.get(length..).unwrap_or(&[])
+                }
+                5 => remaining.get(4..).unwrap_or(&[]),
+                _ => &[],
+            };
+        }
+        field_numbers
+    }
+
+    fn skip_varint(bytes: &[u8]) -> &[u8] {
+        let skip = bytes
+            .iter()
+            .position(|byte| byte & 0x80 == 0)
+            .map(|index| index + 1)
+            .unwrap_or(bytes.len());
+        bytes.get(skip..).unwrap_or(&[])
     }
 }
