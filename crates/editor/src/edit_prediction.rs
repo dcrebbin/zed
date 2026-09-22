@@ -55,6 +55,7 @@ pub(super) enum EditPredictionSettings {
     Disabled,
     Enabled {
         show_in_menu: bool,
+        show_inline_with_menu: bool,
         preview_requires_modifier: bool,
     },
 }
@@ -641,6 +642,7 @@ impl Editor {
     pub fn edit_prediction_visible_in_cursor_popover(&self, has_completion: bool) -> bool {
         if self.edit_prediction_preview_is_active()
             || !self.show_edit_predictions_in_menu()
+            || self.show_edit_predictions_inline_with_menu()
             || !self.edit_predictions_enabled()
         {
             return false;
@@ -774,6 +776,16 @@ impl Editor {
         match self.edit_prediction_settings {
             EditPredictionSettings::Disabled => false,
             EditPredictionSettings::Enabled { show_in_menu, .. } => show_in_menu,
+        }
+    }
+
+    fn show_edit_predictions_inline_with_menu(&self) -> bool {
+        match self.edit_prediction_settings {
+            EditPredictionSettings::Disabled => false,
+            EditPredictionSettings::Enabled {
+                show_inline_with_menu,
+                ..
+            } => show_inline_with_menu,
         }
     }
 
@@ -1692,6 +1704,11 @@ impl Editor {
                 .edit_prediction_provider
                 .as_ref()
                 .is_some_and(|provider| provider.provider.show_predictions_in_menu());
+        let show_inline_with_menu = show_in_menu
+            && self
+                .edit_prediction_provider
+                .as_ref()
+                .is_some_and(|provider| provider.provider.show_predictions_inline_with_menu());
 
         let file = buffer.read(cx).file();
         let preview_requires_modifier =
@@ -1699,6 +1716,7 @@ impl Editor {
 
         EditPredictionSettings::Enabled {
             show_in_menu,
+            show_inline_with_menu,
             preview_requires_modifier,
         }
     }

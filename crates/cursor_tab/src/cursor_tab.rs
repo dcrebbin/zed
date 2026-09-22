@@ -1614,6 +1614,10 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
         true
     }
 
+    fn show_predictions_inline_with_menu() -> bool {
+        true
+    }
+
     fn show_tab_accept_marker() -> bool {
         true
     }
@@ -1627,6 +1631,10 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
     }
 
     fn refresh_on_cursor_click() -> bool {
+        true
+    }
+
+    fn prioritizes_over_completions(&self) -> bool {
         true
     }
 
@@ -3192,6 +3200,12 @@ mod tests {
     #[test]
     fn cursor_tab_does_not_jump_to_distant_edits() {
         assert!(!CursorTabEditPredictionDelegate::supports_jump_to_edit());
+    }
+
+    #[test]
+    fn cursor_tab_predictions_stay_inline_with_completion_menu() {
+        assert!(CursorTabEditPredictionDelegate::show_predictions_in_menu());
+        assert!(CursorTabEditPredictionDelegate::show_predictions_inline_with_menu());
     }
 
     #[test]

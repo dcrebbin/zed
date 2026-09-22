@@ -1200,12 +1200,21 @@ async fn test_tab_accepts_edit_prediction_over_completion(cx: &mut gpui::TestApp
     load_default_keymap(cx);
 
     let mut cx = EditorTestContext::new(cx).await;
-    let provider = cx.new(|_| FakeEditPredictionDelegate::default());
+    let provider = cx.new(|_| FakeEditPredictionDelegate {
+        prioritizes_over_completions: true,
+        ..Default::default()
+    });
     assign_editor_completion_provider(provider.clone(), &mut cx);
+    assign_editor_completion_menu_provider(&mut cx);
     cx.set_state("let x = ˇ;");
 
     propose_edits(&provider, vec![(8..8, "42")], &mut cx);
     cx.update_editor(|editor, window, cx| editor.update_visible_edit_prediction(window, cx));
+    cx.update_editor(|editor, window, cx| {
+        editor.show_completions(&ShowCompletions, window, cx);
+    });
+    cx.condition(|editor, _| editor.has_visible_completions_menu())
+        .await;
 
     assert_editor_active_edit_completion(&mut cx, |_, edits| {
         assert_eq!(edits.len(), 1);
@@ -1836,6 +1845,7 @@ pub struct FakeEditPredictionDelegate {
     pub completion: Option<edit_prediction_types::EditPrediction>,
     pub refresh_count: Arc<AtomicUsize>,
     pub accepts_by_line: bool,
+    pub prioritizes_over_completions: bool,
 }
 
 impl FakeEditPredictionDelegate {
@@ -1866,6 +1876,10 @@ impl EditPredictionDelegate for FakeEditPredictionDelegate {
 
     fn supports_jump_to_edit() -> bool {
         true
+    }
+
+    fn prioritizes_over_completions(&self) -> bool {
+        self.prioritizes_over_completions
     }
 
     fn icons(&self, _cx: &gpui::App) -> EditPredictionIconSet {

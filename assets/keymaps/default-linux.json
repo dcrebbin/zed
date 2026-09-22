@@ -868,13 +868,13 @@
     },
   },
   {
-    "context": "Editor && edit_prediction && edit_prediction_mode == eager && !showing_completions",
+    "context": "Editor && edit_prediction && edit_prediction_mode == eager && (!showing_completions || edit_prediction_priority_over_completions)",
     "bindings": {
       "tab": "editor::AcceptEditPrediction",
     },
   },
   {
-    "context": "Editor && edit_prediction && edit_prediction_accepts_by_line && edit_prediction_mode == eager && !showing_completions",
+    "context": "Editor && edit_prediction && edit_prediction_accepts_by_line && edit_prediction_mode == eager && (!showing_completions || edit_prediction_priority_over_completions)",
     "bindings": {
       "tab": "editor::AcceptNextLineEditPrediction",
     },

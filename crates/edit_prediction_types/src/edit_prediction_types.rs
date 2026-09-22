@@ -170,6 +170,9 @@ pub trait EditPredictionDelegate: 'static + Sized {
     fn name() -> &'static str;
     fn display_name() -> &'static str;
     fn show_predictions_in_menu() -> bool;
+    fn show_predictions_inline_with_menu() -> bool {
+        false
+    }
     fn show_tab_accept_marker() -> bool {
         false
     }
@@ -181,6 +184,10 @@ pub trait EditPredictionDelegate: 'static + Sized {
     }
 
     fn refresh_on_cursor_click() -> bool {
+        false
+    }
+
+    fn prioritizes_over_completions(&self) -> bool {
         false
     }
 
@@ -235,10 +242,12 @@ pub trait EditPredictionDelegateHandle {
         cx: &App,
     ) -> bool;
     fn show_predictions_in_menu(&self) -> bool;
+    fn show_predictions_inline_with_menu(&self) -> bool;
     fn show_tab_accept_marker(&self) -> bool;
     fn accepts_by_line(&self, cx: &App) -> bool;
     fn supports_jump_to_edit(&self) -> bool;
     fn refresh_on_cursor_click(&self) -> bool;
+    fn prioritizes_over_completions(&self, cx: &App) -> bool;
     fn icons(&self, cx: &App) -> EditPredictionIconSet;
     fn data_collection_state(&self, cx: &App) -> DataCollectionState;
     fn usage(&self, cx: &App) -> Option<EditPredictionUsage>;
@@ -280,6 +289,10 @@ where
         T::show_predictions_in_menu()
     }
 
+    fn show_predictions_inline_with_menu(&self) -> bool {
+        T::show_predictions_inline_with_menu()
+    }
+
     fn show_tab_accept_marker(&self) -> bool {
         T::show_tab_accept_marker()
     }
@@ -294,6 +307,10 @@ where
 
     fn refresh_on_cursor_click(&self) -> bool {
         T::refresh_on_cursor_click()
+    }
+
+    fn prioritizes_over_completions(&self, cx: &App) -> bool {
+        self.read(cx).prioritizes_over_completions()
     }
 
     fn icons(&self, cx: &App) -> EditPredictionIconSet {

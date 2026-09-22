@@ -2847,6 +2847,12 @@ impl Editor {
         if has_active_edit_prediction {
             key_context.add(EDIT_PREDICTION_KEY_CONTEXT);
             key_context.add("copilot_suggestion");
+            if self
+                .edit_prediction_provider()
+                .is_some_and(|provider| provider.prioritizes_over_completions(cx))
+            {
+                key_context.add("edit_prediction_priority_over_completions");
+            }
             if self.edit_prediction_accepts_by_line(cx) {
                 key_context.add("edit_prediction_accepts_by_line");
             }
