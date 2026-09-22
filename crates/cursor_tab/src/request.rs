@@ -153,12 +153,8 @@ pub struct LinterError {
 pub struct RelatedInformation {
     #[prost(string, tag = "1")]
     pub message: String,
-    #[prost(string, tag = "2")]
-    pub relative_workspace_path: String,
-    #[prost(string, repeated, tag = "3")]
-    pub relevant_lines: Vec<String>,
-    #[prost(int32, tag = "4")]
-    pub start_line: i32,
+    #[prost(message, optional, tag = "2")]
+    pub range: Option<CodeRange>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -504,7 +500,13 @@ mod tests {
                 }),
             }),
             source: Some("rustc".into()),
-            related_information: Vec::new(),
+            related_information: vec![RelatedInformation {
+                message: "defined here".into(),
+                range: Some(CodeRange {
+                    start_position: Some(Position { line: 4, column: 1 }),
+                    end_position: Some(Position { line: 4, column: 8 }),
+                }),
+            }],
             severity: None,
             is_stale: Some(false),
         });
@@ -523,6 +525,13 @@ mod tests {
                 .and_then(|range| range.end_position)
                 .map(|position| position.column),
             Some(11)
+        );
+        assert_eq!(
+            linter_errors.errors[0].related_information[0]
+                .range
+                .and_then(|range| range.start_position)
+                .map(|position| (position.line, position.column)),
+            Some((4, 1))
         );
     }
 

@@ -27,3 +27,6 @@ sha2.workspace = true
 time.workspace = true
 zeta_prompt.workspace = true
 zed_credentials_provider.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

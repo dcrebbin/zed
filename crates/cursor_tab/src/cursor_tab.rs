@@ -9,8 +9,9 @@ use gpui::{App, AppContext as _, Context, Entity, Global, SharedString, Task};
 use http_client::HttpClient;
 use icons::IconName;
 use language::{
-    Anchor, Bias, Buffer, BufferSnapshot, EditPreview, Point, PointUtf16, TextBufferSnapshot,
-    ToOffset, ToPointUtf16, Unclipped, language_settings::all_language_settings,
+    Anchor, Bias, Buffer, BufferSnapshot, DiagnosticEntry, EditPreview, Point, PointUtf16,
+    RelatedLocation, TextBufferSnapshot, ToOffset, ToPointUtf16, Unclipped,
+    language_settings::all_language_settings,
 };
 use language_model::{ApiKeyState, AuthenticateError, EnvVar, env_var};
 use lsp::DiagnosticSeverity;
@@ -957,31 +958,66 @@ fn file_version(snapshot: &BufferSnapshot) -> Option<i32> {
 
 fn linter_errors(snapshot: &BufferSnapshot) -> Vec<LinterError> {
     snapshot
-        .diagnostics_in_range::<_, PointUtf16>(0..snapshot.len(), false)
-        .map(|entry| LinterError {
-            message: entry.diagnostic.message.as_str().to_owned(),
-            range: Some(CodeRange {
-                start_position: Some(Position {
-                    line: i32::try_from(entry.range.start.row).unwrap_or(i32::MAX),
-                    column: i32::try_from(entry.range.start.column).unwrap_or(i32::MAX),
-                }),
-                end_position: Some(Position {
-                    line: i32::try_from(entry.range.end.row).unwrap_or(i32::MAX),
-                    column: i32::try_from(entry.range.end.column).unwrap_or(i32::MAX),
-                }),
-            }),
-            source: entry.diagnostic.source.clone(),
-            related_information: Vec::new(),
-            severity: Some(match entry.diagnostic.severity {
-                DiagnosticSeverity::ERROR => 1,
-                DiagnosticSeverity::WARNING => 2,
-                DiagnosticSeverity::INFORMATION => 3,
-                DiagnosticSeverity::HINT => 4,
-                _ => 0,
-            }),
-            is_stale: Some(entry.diagnostic.is_disk_based),
-        })
+        .diagnostic_entries_in_range(0..snapshot.len(), false)
+        .map(|entry| linter_error(snapshot, entry))
         .collect()
+}
+
+fn linter_error(snapshot: &BufferSnapshot, entry: &DiagnosticEntry<Anchor>) -> LinterError {
+    let range =
+        entry.range.start.to_point_utf16(snapshot)..entry.range.end.to_point_utf16(snapshot);
+    LinterError {
+        message: entry.diagnostic.message.as_str().to_owned(),
+        range: Some(code_range(range)),
+        source: entry.diagnostic.source.clone(),
+        related_information: entry
+            .related_information
+            .as_deref()
+            .into_iter()
+            .flatten()
+            .map(|information| RelatedInformation {
+                message: information.message.clone(),
+                range: Some(match &information.location {
+                    RelatedLocation::InBuffer(range) => code_range(
+                        range.start.to_point_utf16(snapshot)..range.end.to_point_utf16(snapshot),
+                    ),
+                    RelatedLocation::InAnotherFile(location) => CodeRange {
+                        start_position: Some(position_from_lsp(location.range.start)),
+                        end_position: Some(position_from_lsp(location.range.end)),
+                    },
+                }),
+            })
+            .collect(),
+        severity: Some(match entry.diagnostic.severity {
+            DiagnosticSeverity::ERROR => 1,
+            DiagnosticSeverity::WARNING => 2,
+            DiagnosticSeverity::INFORMATION => 3,
+            DiagnosticSeverity::HINT => 4,
+            _ => 0,
+        }),
+        is_stale: Some(entry.diagnostic.is_disk_based),
+    }
+}
+
+fn code_range(range: Range<PointUtf16>) -> CodeRange {
+    CodeRange {
+        start_position: Some(position(range.start)),
+        end_position: Some(position(range.end)),
+    }
+}
+
+fn position(point: PointUtf16) -> Position {
+    Position {
+        line: i32::try_from(point.row).unwrap_or(i32::MAX),
+        column: i32::try_from(point.column).unwrap_or(i32::MAX),
+    }
+}
+
+fn position_from_lsp(position: lsp::Position) -> Position {
+    Position {
+        line: i32::try_from(position.line).unwrap_or(i32::MAX),
+        column: i32::try_from(position.character).unwrap_or(i32::MAX),
+    }
 }
 
 fn workspace_id(workspace_root_path: &str) -> Option<String> {
@@ -1749,6 +1785,105 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use language::{Diagnostic, DiagnosticSet, LanguageServerId};
+
+    #[gpui::test]
+    fn sends_every_diagnostic_with_related_information(cx: &mut gpui::TestAppContext) {
+        let text = "fn main() {\n    unknown();\n}\n";
+        let buffer = cx.new(|cx| Buffer::local(text, cx));
+        buffer.update(cx, |buffer, cx| {
+            let snapshot = buffer.snapshot();
+            let mut error = DiagnosticEntry::new(
+                PointUtf16::new(1, 4)..PointUtf16::new(1, 11),
+                Diagnostic {
+                    message: "cannot find function `unknown`".into(),
+                    severity: DiagnosticSeverity::ERROR,
+                    source: Some("rust-analyzer".into()),
+                    is_disk_based: true,
+                    is_primary: true,
+                    ..Default::default()
+                },
+            );
+            error.related_information = Some(Arc::from([
+                language::RelatedInformation {
+                    message: "not found in this scope".into(),
+                    location: RelatedLocation::InBuffer(
+                        PointUtf16::new(0, 3)..PointUtf16::new(0, 7),
+                    ),
+                },
+                language::RelatedInformation {
+                    message: "defined here".into(),
+                    location: RelatedLocation::InAnotherFile(lsp::Location {
+                        uri: lsp::Uri::from_file_path("/work/other.rs").expect("uri"),
+                        range: lsp::Range::new(
+                            lsp::Position::new(4, 1),
+                            lsp::Position::new(4, 8),
+                        ),
+                    }),
+                },
+            ]));
+            let warning = DiagnosticEntry::new(
+                PointUtf16::new(0, 3)..PointUtf16::new(0, 7),
+                Diagnostic {
+                    message: "unused function".into(),
+                    severity: DiagnosticSeverity::WARNING,
+                    source: Some("rustc".into()),
+                    ..Default::default()
+                },
+            );
+            let hint = DiagnosticEntry::new(
+                PointUtf16::new(2, 0)..PointUtf16::new(2, 1),
+                Diagnostic {
+                    message: "consider adding a return type".into(),
+                    severity: DiagnosticSeverity::HINT,
+                    ..Default::default()
+                },
+            );
+            buffer.update_diagnostics(
+                LanguageServerId(1),
+                DiagnosticSet::new([error, warning, hint], &snapshot),
+                cx,
+            );
+        });
+
+        let errors = linter_errors(&buffer.read(cx).snapshot());
+        assert_eq!(errors.len(), 3);
+        assert_eq!(errors[0].message, "unused function");
+        assert_eq!(errors[0].severity, Some(2));
+        assert!(errors[0].related_information.is_empty());
+        assert_eq!(errors[1].message, "cannot find function `unknown`");
+        assert_eq!(errors[1].severity, Some(1));
+        assert_eq!(errors[1].is_stale, Some(true));
+        assert_eq!(
+            errors[1]
+                .range
+                .and_then(|range| range.start_position)
+                .map(|position| (position.line, position.column)),
+            Some((1, 4))
+        );
+        assert_eq!(errors[1].related_information.len(), 2);
+        assert_eq!(
+            errors[1].related_information[0].message,
+            "not found in this scope"
+        );
+        assert_eq!(
+            errors[1].related_information[0]
+                .range
+                .and_then(|range| range.end_position)
+                .map(|position| (position.line, position.column)),
+            Some((0, 7))
+        );
+        assert_eq!(errors[1].related_information[1].message, "defined here");
+        assert_eq!(
+            errors[1].related_information[1]
+                .range
+                .and_then(|range| range.start_position)
+                .map(|position| (position.line, position.column)),
+            Some((4, 1))
+        );
+        assert_eq!(errors[2].message, "consider adding a return type");
+        assert_eq!(errors[2].severity, Some(4));
+    }
 
     #[test]
     fn official_multidiff_streams_match_debug_diffs() -> Result<()> {
