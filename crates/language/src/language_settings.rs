@@ -608,6 +608,8 @@ pub struct CursorTabSettings {
     pub request_id: String,
     /// Session ID sent with Cursor Tab completion requests.
     pub session_id: String,
+    /// Client key sent with Cursor file sync requests.
+    pub file_sync_client_key: String,
     /// Automatic prediction debounce delay.
     pub prediction_debounce: DelayMs,
 }
@@ -965,6 +967,7 @@ impl settings::Settings for AllLanguageSettings {
             client_version: cursor_tab.client_version.unwrap(),
             request_id: cursor_tab.request_id.unwrap(),
             session_id: cursor_tab.session_id.unwrap(),
+            file_sync_client_key: cursor_tab.file_sync_client_key.unwrap(),
             prediction_debounce: cursor_tab.prediction_debounce.unwrap(),
         };
 

@@ -74,9 +74,11 @@ fn write_cursor_tab_debug(arguments: fmt::Arguments<'_>) {
     }
 }
 
-pub const CURSOR_TAB_API_URL: &str =
-    "https://us-only.gcpp.cursor.sh/aiserver.v1.AiService/StreamCpp";
+pub const CURSOR_TAB_API_URL: &str = "https://us-only.gcpp.cursor.sh";
 pub const CURSOR_TAB_MODEL: &str = "fast";
+
+const STREAM_CPP_PATH: &str = "aiserver.v1.AiService/StreamCpp";
+const FILE_SYNC_SERVICE_PATH: &str = "aiserver.v1.FileSyncService/";
 
 static CURSOR_TAB_BEARER_TOKEN_ENV_VAR: std::sync::LazyLock<EnvVar> =
     env_var!("CURSOR_TAB_BEARER_TOKEN");
@@ -939,6 +941,98 @@ struct CursorTabRequestContext {
     code_results: Vec<CodeResult>,
 }
 
+struct SyncedFile {
+    model_version: i32,
+    contents: String,
+}
+
+enum FileSyncRequest {
+    Upload(FSUploadFileRequest),
+    Sync(FSSyncFileRequest),
+}
+
+impl FileSyncRequest {
+    fn method_name(&self) -> &'static str {
+        match self {
+            Self::Upload(_) => "FSUploadFile",
+            Self::Sync(_) => "FSSyncFile",
+        }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::Upload(request) => request.encode_to_vec(),
+            Self::Sync(request) => request.encode_to_vec(),
+        }
+    }
+}
+
+fn file_sync_api_url(api_url: &str, method_name: &str) -> Result<String> {
+    let api_url = api_url.trim_end_matches('/');
+    if api_url.is_empty() {
+        bail!("Cursor Tab API URL must not be empty");
+    }
+    Ok(format!("{api_url}/{FILE_SYNC_SERVICE_PATH}{method_name}"))
+}
+
+fn stream_cpp_api_url(api_url: &str) -> Result<String> {
+    let api_url = api_url.trim_end_matches('/');
+    if api_url.is_empty() {
+        bail!("Cursor Tab API URL must not be empty");
+    }
+    Ok(format!("{api_url}/{STREAM_CPP_PATH}"))
+}
+
+fn file_sync_cookie(workspace_root_path: &str) -> String {
+    let hash = sha_256(workspace_root_path);
+    format!("FilesyncCookie={}", &hash[..32])
+}
+
+fn single_file_update(old_contents: &str, new_contents: &str) -> Result<SingleUpdateRequest> {
+    let old_bytes = old_contents.as_bytes();
+    let new_bytes = new_contents.as_bytes();
+    let mut prefix_length = old_bytes
+        .iter()
+        .zip(new_bytes)
+        .take_while(|(old, new)| old == new)
+        .count();
+    while !old_contents.is_char_boundary(prefix_length)
+        || !new_contents.is_char_boundary(prefix_length)
+    {
+        prefix_length = prefix_length.saturating_sub(1);
+    }
+
+    let maximum_suffix_length = old_contents
+        .len()
+        .saturating_sub(prefix_length)
+        .min(new_contents.len().saturating_sub(prefix_length));
+    let mut suffix_length = old_bytes
+        .iter()
+        .rev()
+        .zip(new_bytes.iter().rev())
+        .take(maximum_suffix_length)
+        .take_while(|(old, new)| old == new)
+        .count();
+    while !old_contents.is_char_boundary(old_contents.len() - suffix_length)
+        || !new_contents.is_char_boundary(new_contents.len() - suffix_length)
+    {
+        suffix_length = suffix_length.saturating_sub(1);
+    }
+
+    let old_end = old_contents.len() - suffix_length;
+    let new_end = new_contents.len() - suffix_length;
+    let start_position = old_contents[..prefix_length].encode_utf16().count();
+    let end_position = old_contents[..old_end].encode_utf16().count();
+    let replaced_string = new_contents[prefix_length..new_end].to_owned();
+    Ok(SingleUpdateRequest {
+        start_position: i32::try_from(start_position)?,
+        end_position: i32::try_from(end_position)?,
+        change_length: i32::try_from(end_position.saturating_sub(start_position))?,
+        replaced_string,
+        range: None,
+    })
+}
+
 fn milliseconds_since_epoch(time: SystemTime) -> Option<f64> {
     time.duration_since(UNIX_EPOCH)
         .ok()
@@ -1124,6 +1218,9 @@ pub struct CursorTabEditPredictionDelegate {
     project: Entity<Project>,
     edit_prediction_store: Entity<EditPredictionStore>,
     pending_request: Option<Task<Result<()>>>,
+    pending_file_sync: Option<Task<Result<()>>>,
+    synced_files: HashMap<String, SyncedFile>,
+    file_sync_uuid: String,
     current_completion: Option<CurrentCompletion>,
     retrigger_after_accept: bool,
     request_generation: u64,
@@ -1140,6 +1237,9 @@ impl CursorTabEditPredictionDelegate {
             project,
             edit_prediction_store,
             pending_request: None,
+            pending_file_sync: None,
+            synced_files: HashMap::new(),
+            file_sync_uuid: uuid::Uuid::new_v4().to_string(),
             current_completion: None,
             retrigger_after_accept: true,
             request_generation: 0,
@@ -1319,7 +1419,7 @@ impl CursorTabEditPredictionDelegate {
         let request_body = encode_connect_message(&request)?;
         let request = http_client::Request::builder()
             .method(http_client::Method::POST)
-            .uri(api_url.as_str())
+            .uri(stream_cpp_api_url(api_url.as_ref())?)
             .header("content-type", "application/connect+proto")
             .header("connect-protocol-version", "1")
             .header("x-cursor-client-type", "ide")
@@ -1370,6 +1470,134 @@ impl CursorTabEditPredictionDelegate {
             );
         }
         Ok(stream)
+    }
+
+    async fn send_file_sync_request(
+        http_client: Arc<dyn HttpClient>,
+        completion_api_url: SharedString,
+        bearer_token: Arc<str>,
+        client_version: String,
+        request_id: String,
+        session_id: String,
+        file_sync_client_key: String,
+        cookie: String,
+        file_sync_request: FileSyncRequest,
+    ) -> Result<()> {
+        let api_url =
+            file_sync_api_url(completion_api_url.as_ref(), file_sync_request.method_name())?;
+        let request = http_client::Request::builder()
+            .method(http_client::Method::POST)
+            .uri(api_url)
+            .header("content-type", "application/proto")
+            .header("connect-protocol-version", "1")
+            .header("x-cursor-client-type", "ide")
+            .header("x-cursor-client-version", client_version)
+            .header("x-request-id", request_id)
+            .header("x-session-id", session_id)
+            .header("x-fs-client-key", file_sync_client_key)
+            .header("authorization", authorization_header_value(&bearer_token))
+            .header("cookie", cookie)
+            .body(http_client::AsyncBody::from(file_sync_request.encode()))?;
+
+        let mut response = http_client.send(request).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let mut body = Vec::new();
+            response.body_mut().read_to_end(&mut body).await?;
+            bail!(
+                "Cursor file sync API error: {status} - {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        Ok(())
+    }
+
+    fn enqueue_file_sync(
+        &mut self,
+        relative_workspace_path: String,
+        workspace_root_path: &str,
+        contents: String,
+        trigger: EditPredictionRequestTrigger,
+        bearer_token: Arc<str>,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let settings = &all_language_settings(None, cx).edit_predictions.cursor_tab;
+        let file_sync_client_key = settings.file_sync_client_key.clone();
+        if file_sync_client_key.is_empty() {
+            return Ok(());
+        }
+        let file_sync_request =
+            if let Some(synced_file) = self.synced_files.get_mut(&relative_workspace_path) {
+                if trigger != EditPredictionRequestTrigger::BufferEdit
+                    || synced_file.contents == contents
+                {
+                    return Ok(());
+                }
+                let model_version = synced_file.model_version.saturating_add(1);
+                let update = single_file_update(&synced_file.contents, &contents)?;
+                synced_file.contents.clone_from(&contents);
+                synced_file.model_version = model_version;
+                FileSyncRequest::Sync(FSSyncFileRequest {
+                    uuid: self.file_sync_uuid.clone(),
+                    relative_workspace_path: relative_workspace_path.clone(),
+                    model_version,
+                    filesync_updates: vec![FilesyncUpdate {
+                        model_version,
+                        relative_workspace_path: relative_workspace_path.clone(),
+                        updates: vec![update],
+                        expected_file_length: i32::try_from(contents.encode_utf16().count())?,
+                    }],
+                    sha256_hash: sha_256(&contents),
+                })
+            } else {
+                let model_version = 1;
+                self.synced_files.insert(
+                    relative_workspace_path.clone(),
+                    SyncedFile {
+                        model_version,
+                        contents: contents.clone(),
+                    },
+                );
+                FileSyncRequest::Upload(FSUploadFileRequest {
+                    uuid: self.file_sync_uuid.clone(),
+                    relative_workspace_path,
+                    contents: contents.clone(),
+                    model_version,
+                    sha256_hash: sha_256(&contents),
+                })
+            };
+
+        let previous_request = self.pending_file_sync.take();
+        let http_client = self.http_client.clone();
+        let api_url = settings.api_url.clone().into();
+        let client_version = settings.client_version.clone();
+        let request_id = settings.request_id.clone();
+        let session_id = settings.session_id.clone();
+        let cookie = file_sync_cookie(workspace_root_path);
+        self.pending_file_sync = Some(cx.spawn(async move |_, _cx| {
+            if let Some(previous_request) = previous_request
+                && let Err(error) = previous_request.await
+            {
+                log::error!("previous Cursor file sync request failed: {error:#}");
+            }
+            let result = Self::send_file_sync_request(
+                http_client,
+                api_url,
+                bearer_token,
+                client_version,
+                request_id,
+                session_id,
+                file_sync_client_key,
+                cookie,
+                file_sync_request,
+            )
+            .await;
+            if let Err(error) = &result {
+                log::error!("Cursor file sync request failed: {error:#}");
+            }
+            result
+        }));
+        Ok(())
     }
 }
 
@@ -1509,6 +1737,17 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
         let request_id = settings.request_id.clone();
         let session_id = settings.session_id.clone();
         let http_client = self.http_client.clone();
+        let contents = snapshot.text();
+        if let Err(error) = self.enqueue_file_sync(
+            relative_workspace_path.clone(),
+            &workspace_root_path,
+            contents.clone(),
+            trigger,
+            bearer_token.clone(),
+            cx,
+        ) {
+            log::error!("failed to prepare Cursor file sync request: {error:#}");
+        }
         let started_at = Instant::now();
         let intent_source = match trigger {
             EditPredictionRequestTrigger::DiagnosticNavigation => "linter_errors",
@@ -1549,7 +1788,6 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
                     .duration_since(UNIX_EPOCH)
                     .context("system clock is before the Unix epoch")?
                     .as_millis() as f64;
-                let contents = snapshot.text();
                 let linter_errors = linter_errors(&snapshot);
                 let client_timezone_offset = UtcOffset::current_local_offset()
                     .ok()
@@ -1815,10 +2053,7 @@ mod tests {
                     message: "defined here".into(),
                     location: RelatedLocation::InAnotherFile(lsp::Location {
                         uri: lsp::Uri::from_file_path("/work/other.rs").expect("uri"),
-                        range: lsp::Range::new(
-                            lsp::Position::new(4, 1),
-                            lsp::Position::new(4, 8),
-                        ),
+                        range: lsp::Range::new(lsp::Position::new(4, 1), lsp::Position::new(4, 8)),
                     }),
                 },
             ]));
@@ -2951,5 +3186,37 @@ mod tests {
     #[test]
     fn cursor_tab_does_not_jump_to_distant_edits() {
         assert!(!CursorTabEditPredictionDelegate::supports_jump_to_edit());
+    }
+
+    #[test]
+    fn constructs_file_sync_service_urls() {
+        assert_eq!(
+            file_sync_api_url(CURSOR_TAB_API_URL, "FSSyncFile").unwrap(),
+            "https://us-only.gcpp.cursor.sh/aiserver.v1.FileSyncService/FSSyncFile"
+        );
+        assert_eq!(
+            stream_cpp_api_url(CURSOR_TAB_API_URL).unwrap(),
+            "https://us-only.gcpp.cursor.sh/aiserver.v1.AiService/StreamCpp"
+        );
+    }
+
+    #[test]
+    fn computes_file_sync_update_in_utf16_offsets() {
+        let update = single_file_update("a😀c", "a😀longer c").unwrap();
+
+        assert_eq!(update.start_position, 3);
+        assert_eq!(update.end_position, 3);
+        assert_eq!(update.change_length, 0);
+        assert_eq!(update.replaced_string, "longer ");
+    }
+
+    #[test]
+    fn computes_file_sync_replacement() {
+        let update = single_file_update("hello world", "hello rust").unwrap();
+
+        assert_eq!(update.start_position, 6);
+        assert_eq!(update.end_position, 11);
+        assert_eq!(update.change_length, 5);
+        assert_eq!(update.replaced_string, "rust");
     }
 }

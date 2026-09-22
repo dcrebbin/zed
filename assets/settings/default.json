@@ -1906,11 +1906,12 @@
       "prediction_debounce": 150,
     },
     "cursor_tab": {
-      "api_url": "https://us-only.gcpp.cursor.sh/aiserver.v1.AiService/StreamCpp",
+      "api_url": "https://us-only.gcpp.cursor.sh",
       "model": "fast",
       "client_version": "",
       "request_id": "",
       "session_id": "",
+      "file_sync_client_key": "",
       "prediction_debounce": 75,
     },
     "ollama": {

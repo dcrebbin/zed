@@ -875,7 +875,7 @@ fn cursor_tab_settings() -> Box<[SettingsPageItem]> {
     Box::new([
         SettingsPageItem::SettingItem(SettingItem {
             title: "API URL",
-            description: "The API URL used for Cursor Tab completion requests.",
+            description: "The API host used for Cursor Tab requests.",
             field: Box::new(SettingField {
                 organization_override: None,
                 pick: |settings| {
@@ -1030,6 +1030,37 @@ fn cursor_tab_settings() -> Box<[SettingsPageItem]> {
                         .session_id = value;
                 },
                 json_path: Some("edit_predictions.cursor_tab.session_id"),
+            }),
+            metadata: None,
+            files: USER,
+        }),
+        SettingsPageItem::SettingItem(SettingItem {
+            title: "File Sync Client Key",
+            description: "The x-fs-client-key header sent with Cursor file sync requests.",
+            field: Box::new(SettingField {
+                organization_override: None,
+                pick: |settings| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .as_ref()?
+                        .cursor_tab
+                        .as_ref()?
+                        .file_sync_client_key
+                        .as_ref()
+                },
+                write: |settings, value, _app: &App| {
+                    settings
+                        .project
+                        .all_languages
+                        .edit_predictions
+                        .get_or_insert_default()
+                        .cursor_tab
+                        .get_or_insert_default()
+                        .file_sync_client_key = value;
+                },
+                json_path: Some("edit_predictions.cursor_tab.file_sync_client_key"),
             }),
             metadata: None,
             files: USER,

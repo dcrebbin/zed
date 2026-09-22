@@ -25,6 +25,7 @@ prost.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 time.workspace = true
+uuid.workspace = true
 zeta_prompt.workspace = true
 zed_credentials_provider.workspace = true
 

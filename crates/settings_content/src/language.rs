@@ -276,7 +276,7 @@ pub struct CodestralSettingsContent {
 pub struct CursorTabSettingsContent {
     /// API URL used for Cursor Tab completion requests.
     ///
-    /// Default: "https://us-only.gcpp.cursor.sh/aiserver.v1.AiService/StreamCpp"
+    /// Default: "https://us-only.gcpp.cursor.sh"
     pub api_url: Option<String>,
     /// Model used for Cursor Tab completions.
     ///
@@ -294,6 +294,10 @@ pub struct CursorTabSettingsContent {
     ///
     /// Default: ""
     pub session_id: Option<String>,
+    /// Client key sent with Cursor file sync requests.
+    ///
+    /// Default: ""
+    pub file_sync_client_key: Option<String>,
     /// The debounce delay in milliseconds before automatically requesting a prediction
     /// after typing stops. Set to 0 to request predictions immediately.
     ///

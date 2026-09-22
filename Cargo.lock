@@ -4550,6 +4550,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "time",
+ "uuid",
  "zed_credentials_provider",
  "zeta_prompt",
 ]

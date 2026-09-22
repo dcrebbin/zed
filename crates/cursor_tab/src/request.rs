@@ -64,6 +64,72 @@ pub struct StreamCppRequest {
 }
 
 #[derive(Clone, PartialEq, Message)]
+pub struct FSUploadFileRequest {
+    #[prost(string, tag = "1")]
+    pub uuid: String,
+    #[prost(string, tag = "2")]
+    pub relative_workspace_path: String,
+    #[prost(string, tag = "3")]
+    pub contents: String,
+    #[prost(int32, tag = "4")]
+    pub model_version: i32,
+    #[prost(string, tag = "5")]
+    pub sha256_hash: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct FSSyncFileRequest {
+    #[prost(string, tag = "1")]
+    pub uuid: String,
+    #[prost(string, tag = "2")]
+    pub relative_workspace_path: String,
+    #[prost(int32, tag = "3")]
+    pub model_version: i32,
+    #[prost(message, repeated, tag = "4")]
+    pub filesync_updates: Vec<FilesyncUpdate>,
+    #[prost(string, tag = "5")]
+    pub sha256_hash: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct FilesyncUpdate {
+    #[prost(int32, tag = "1")]
+    pub model_version: i32,
+    #[prost(string, tag = "2")]
+    pub relative_workspace_path: String,
+    #[prost(message, repeated, tag = "3")]
+    pub updates: Vec<SingleUpdateRequest>,
+    #[prost(int32, tag = "4")]
+    pub expected_file_length: i32,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct SingleUpdateRequest {
+    #[prost(int32, tag = "1")]
+    pub start_position: i32,
+    #[prost(int32, tag = "2")]
+    pub end_position: i32,
+    #[prost(int32, tag = "3")]
+    pub change_length: i32,
+    #[prost(string, tag = "4")]
+    pub replaced_string: String,
+    #[prost(message, optional, tag = "5")]
+    pub range: Option<SimpleRange>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Message)]
+pub struct SimpleRange {
+    #[prost(int32, tag = "1")]
+    pub start_line_number: i32,
+    #[prost(int32, tag = "2")]
+    pub start_column: i32,
+    #[prost(int32, tag = "3")]
+    pub end_line_number_inclusive: i32,
+    #[prost(int32, tag = "4")]
+    pub end_column: i32,
+}
+
+#[derive(Clone, PartialEq, Message)]
 pub struct CurrentFileInfo {
     #[prost(string, tag = "1")]
     pub relative_workspace_path: String,
@@ -257,7 +323,6 @@ empty_messages!(
     ContextItem,
     ParameterHint,
     LspContext,
-    FilesyncUpdate,
     LspSuggestion,
 );
 
