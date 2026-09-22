@@ -1626,6 +1626,10 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
         false
     }
 
+    fn refresh_on_cursor_click() -> bool {
+        true
+    }
+
     fn icons(&self, _cx: &App) -> EditPredictionIconSet {
         EditPredictionIconSet::new(IconName::EditorCursor)
     }
@@ -1664,10 +1668,11 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
             return;
         }
         let snapshot = buffer.read(cx).snapshot();
-        if self
-            .current_completion
-            .as_ref()
-            .is_some_and(|completion| completion.interpolate(&snapshot).is_some())
+        if trigger != EditPredictionRequestTrigger::CursorClick
+            && self
+                .current_completion
+                .as_ref()
+                .is_some_and(|completion| completion.interpolate(&snapshot).is_some())
         {
             return;
         }
@@ -1761,6 +1766,7 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
             | EditPredictionRequestTrigger::UserInfoChanged
             | EditPredictionRequestTrigger::VimModeChanged
             | EditPredictionRequestTrigger::SettingsChanged
+            | EditPredictionRequestTrigger::CursorClick
             | EditPredictionRequestTrigger::Other => "typing",
         };
 

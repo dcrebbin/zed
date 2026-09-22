@@ -950,6 +950,7 @@ fn predict_edits_request_trigger_from_editor_trigger(
         EditPredictionRequestTrigger::SettingsChanged => {
             PredictEditsRequestTrigger::SettingsChanged
         }
+        EditPredictionRequestTrigger::CursorClick => PredictEditsRequestTrigger::Other,
         EditPredictionRequestTrigger::Other => PredictEditsRequestTrigger::Other,
     }
 }

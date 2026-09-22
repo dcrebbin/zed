@@ -757,6 +757,9 @@ impl EditorElement {
                 cx,
             );
         }
+        if click_count == 1 {
+            editor.refresh_edit_prediction_on_cursor_click(window, cx);
+        }
         cx.stop_propagation();
     }
 

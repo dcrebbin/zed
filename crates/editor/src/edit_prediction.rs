@@ -777,6 +777,26 @@ impl Editor {
         }
     }
 
+    pub(super) fn refresh_edit_prediction_on_cursor_click(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .edit_prediction_provider
+            .as_ref()
+            .is_some_and(|provider| provider.provider.refresh_on_cursor_click())
+        {
+            self.refresh_edit_prediction(
+                false,
+                false,
+                EditPredictionRequestTrigger::CursorClick,
+                window,
+                cx,
+            );
+        }
+    }
+
     pub(super) fn edit_prediction_requires_modifier(&self) -> bool {
         match self.edit_prediction_settings {
             EditPredictionSettings::Disabled => false,

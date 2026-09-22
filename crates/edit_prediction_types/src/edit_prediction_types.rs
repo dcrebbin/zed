@@ -22,6 +22,7 @@ pub enum EditPredictionRequestTrigger {
     UserInfoChanged,
     VimModeChanged,
     SettingsChanged,
+    CursorClick,
     #[default]
     Other,
 }
@@ -179,6 +180,10 @@ pub trait EditPredictionDelegate: 'static + Sized {
         true
     }
 
+    fn refresh_on_cursor_click() -> bool {
+        false
+    }
+
     fn icons(&self, cx: &App) -> EditPredictionIconSet;
 
     fn data_collection_state(&self, _cx: &App) -> DataCollectionState {
@@ -233,6 +238,7 @@ pub trait EditPredictionDelegateHandle {
     fn show_tab_accept_marker(&self) -> bool;
     fn accepts_by_line(&self, cx: &App) -> bool;
     fn supports_jump_to_edit(&self) -> bool;
+    fn refresh_on_cursor_click(&self) -> bool;
     fn icons(&self, cx: &App) -> EditPredictionIconSet;
     fn data_collection_state(&self, cx: &App) -> DataCollectionState;
     fn usage(&self, cx: &App) -> Option<EditPredictionUsage>;
@@ -284,6 +290,10 @@ where
 
     fn supports_jump_to_edit(&self) -> bool {
         T::supports_jump_to_edit()
+    }
+
+    fn refresh_on_cursor_click(&self) -> bool {
+        T::refresh_on_cursor_click()
     }
 
     fn icons(&self, cx: &App) -> EditPredictionIconSet {
