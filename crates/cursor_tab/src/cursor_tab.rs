@@ -1627,7 +1627,7 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
     }
 
     fn supports_jump_to_edit() -> bool {
-        false
+        true
     }
 
     fn refresh_on_cursor_click() -> bool {
@@ -3198,8 +3198,8 @@ mod tests {
     }
 
     #[test]
-    fn cursor_tab_does_not_jump_to_distant_edits() {
-        assert!(!CursorTabEditPredictionDelegate::supports_jump_to_edit());
+    fn cursor_tab_jumps_to_distant_edits() {
+        assert!(CursorTabEditPredictionDelegate::supports_jump_to_edit());
     }
 
     #[test]
