@@ -1,0 +1,1078 @@
+[
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": ""
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 13,
+          "endLine": 12
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  optionalActions: [],"
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 28,
+          "endLine": 28
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:12\n+|  optionalActions: [],\n@@ main.js:27\n-|    optionalActions: [],"
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": ""
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 16,
+          "endLine": 26
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n   {\n    ...defaultLocation,\n    artists: [\"\"],\n   },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 20,
+          "endLine": 33
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  { \n    ...defaultLocation,\n    artists: [\"\"],\n    optionalActions: [],\n  },\n},"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:15\n-|    artists: [\"\"],\n-|  address: \"\",\n-|  coordinates: [0, 0],\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n-|  contributors: {\n-|    song: {},\n-|    musicVideo: {},\n-|  },\n+|   {\n+|    ...defaultLocation,\n+|    artists: [\"\"],\n+|   },\n@@ main.js:19\n-|  { \n-|    artists: [\"\"],\n-|  address: \"\",\n-|  coordinates: [0, 0],\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n-|  contributors: {\n-|    song: {},\n-|    musicVideo: {},\n-|    optionalActions: [],\n-|  },\n-|},\n+|  { \n+|    ...defaultLocation,\n+|    artists: [\"\"],\n+|    optionalActions: [],\n+|  },\n+|},"
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 27,
+          "endLine": 27
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  optionalActions: [],"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:26\n-|  \n+|  optionalActions: [],"
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 16,
+          "endLine": 16
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    {artists: [\"\"],"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 18,
+          "endLine": 26
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  coordinates: [0, 0],\n  name: \"\",\n    streetView: \"\",\n    url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n    image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n    contributors: {\n      song: {},\n      musicVideo: {},\n    },\n  },"
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 17,
+          "endLine": 19
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    address: \"\",\n    coordinates: [0, 0],\n    name: \"\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:15\n-|    artists: [\"\"],\n+|    {artists: [\"\"],\n@@ main.js:17\n-|  coordinates: [0, 0],\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n-|  contributors: {\n-|    song: {},\n-|    musicVideo: {},\n-|  },\n+|  coordinates: [0, 0],\n+|  name: \"\",\n+|    streetView: \"\",\n+|    url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n+|    image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n+|    contributors: {\n+|      song: {},\n+|      musicVideo: {},\n+|    },\n+|  },\n@@ main.js:16\n-|  address: \"\",\n-|  coordinates: [0, 0],\n-|  name: \"\",\n+|    address: \"\",\n+|    coordinates: [0, 0],\n+|    name: \"\","
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 16,
+          "endLine": 26
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    {\n        ...defaultLocation,\n        artists: [\"\"],\n    },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 20,
+          "endLine": 34
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  \n  { ...defaultLocation, artists: [\"\"], optionalActions: [] },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:15\n-|    artists: [\"\"],\n-|  address: \"\",\n-|  coordinates: [0, 0],\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n-|  contributors: {\n-|    song: {},\n-|    musicVideo: {},\n-|  },\n+|    {\n+|        ...defaultLocation,\n+|        artists: [\"\"],\n+|    },\n@@ main.js:19\n-|  \n-|  { \n-|    artists: [\"\"],\n-|  address: \"\",\n-|  coordinates: [0, 0],\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n-|  contributors: {\n-|    song: {},\n-|    musicVideo: {},\n-|    optionalActions: [],\n-|  },\n-|},\n+|  \n+|  { ...defaultLocation, artists: [\"\"], optionalActions: [] },"
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 27,
+          "endLine": 27
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  optionalActions: [],"
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 16,
+          "endLine": 16
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  {\n    artists: [\"\"],"
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 29,
+          "endLine": 29
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n},\n  { "
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:26\n-|  \n+|  optionalActions: [],\n@@ main.js:15\n-|    artists: [\"\"],\n+|  {\n+|    artists: [\"\"],\n@@ main.js:28\n-|  { \n+|},\n+|  { "
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 16,
+          "endLine": 16
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    {artists: [\"\"],"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 17,
+          "endLine": 26
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    address: \"\",\n    coordinates: [0, 0],\n    name: \"\",\n    streetView: \"\",\n    url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n    image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n    contributors: {\n      song: {},\n      musicVideo: {},\n    },\n  },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 28,
+          "endLine": 42
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  \n},"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 30,
+          "endLine": 30
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  { \n    artists: [\"\"],\n  address: \"\",\n  coordinates: [0, 0],\n  name: \"\",\n  streetView: \"\",\n  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n  contributors: {\n    song: {},\n    musicVideo: {},\n    optionalActions: [],\n  },\n},"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:15\n-|    artists: [\"\"],\n+|    {artists: [\"\"],\n@@ main.js:16\n-|  address: \"\",\n-|  coordinates: [0, 0],\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n-|  contributors: {\n-|    song: {},\n-|    musicVideo: {},\n-|  },\n+|    address: \"\",\n+|    coordinates: [0, 0],\n+|    name: \"\",\n+|    streetView: \"\",\n+|    url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n+|    image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n+|    contributors: {\n+|      song: {},\n+|      musicVideo: {},\n+|    },\n+|  },\n@@ main.js:27\n-|  \n-|  { \n-|    artists: [\"\"],\n-|  address: \"\",\n-|  coordinates: [0, 0],\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n-|  contributors: {\n-|    song: {},\n-|    musicVideo: {},\n-|    optionalActions: [],\n-|  },\n-|},\n+|  \n+|},\n@@ main.js:29\n-|  {\n+|  { \n+|    artists: [\"\"],\n+|  address: \"\",\n+|  coordinates: [0, 0],\n+|  name: \"\",\n+|  streetView: \"\",\n+|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n+|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n+|  contributors: {\n+|    song: {},\n+|    musicVideo: {},\n+|    optionalActions: [],\n+|  },\n+|},"
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 16,
+          "endLine": 16
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  {"
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 28,
+          "endLine": 28
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n},"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:15\n-|  \n+|  {\n@@ main.js:27\n-|\n+|},"
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": ""
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": ""
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": ""
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 23,
+          "endLine": 23
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  image: \"https://i.ytimg.com/vi/ /mqdefault.jpg\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:22\n-|  image: \"https://i.ytimg.com/vi/ /mqdefault.jpg\",\n+|  image: \"https://i.ytimg.com/vi/ /mqdefault.jpg\","
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 23,
+          "endLine": 23
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\","
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 36,
+          "endLine": 36
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:22\n-|  image: \"https://i.ytimg.com/vi//mqdefault.jpg\",\n+|  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\",\n@@ main.js:35\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n+|  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\","
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 23,
+          "endLine": 23
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\","
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 36,
+          "endLine": 36
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:22\n-|  image: \"https://i.ytimg.com/vi/mqdefault.jpg\",\n+|  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\",\n@@ main.js:35\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n+|  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\","
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 17,
+          "endLine": 17
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    artists: [\"Zpecial\"],"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 18,
+          "endLine": 28
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    address: \"Tai On Coffee & Tea Shop, Yau Ma Tei, Kowloon, Hong Kong\",\n    coordinates: [22.313329, 114.168362],\n    name: \"復古是我太念舊 (Vintage Limited Edition) (zh)\",\n    streetView: \"https://maps.app.goo.gl/RUTncvojN8idtqmt6\",\n    url: \"https://youtu.be/ZFJbHNd4PQA?t=183\",\n    image: \"https://i.ytimg.com/vi/ZFJbHNd4PQA/mqdefault.jpg\",\n    contributors: {\n      song: {},\n      musicVideo: {},\n    },\n  },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 30,
+          "endLine": 30
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    artists: [\"ICHIBAN GIRLS\"],"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 32,
+          "endLine": 42
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    coordinates: [22.2447932, 114.1772857],\n    name: \"旋轉木馬\",\n    streetView: \"https://maps.app.goo.gl/YxgsV5M24PVukb1w9\",\n    url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n    image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\",\n    contributors: {\n      song: {},\n      musicVideo: {},\n    },\n  },"
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 31,
+          "endLine": 31
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    address: \"Ocean Park Merry-Go-Round, Hong Kong Island, Hong Kong\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:16\n-|    artists: [\"Z\"],\n+|    artists: [\"Zpecial\"],\n@@ main.js:17\n-|  address: \"\",\n-|  coordinates: [0, 0],\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n-|  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\",\n-|  contributors: {\n-|    song: {},\n-|    musicVideo: {},\n-|  },\n-|},\n+|    address: \"Tai On Coffee & Tea Shop, Yau Ma Tei, Kowloon, Hong Kong\",\n+|    coordinates: [22.313329, 114.168362],\n+|    name: \"復古是我太念舊 (Vintage Limited Edition) (zh)\",\n+|    streetView: \"https://maps.app.goo.gl/RUTncvojN8idtqmt6\",\n+|    url: \"https://youtu.be/ZFJbHNd4PQA?t=183\",\n+|    image: \"https://i.ytimg.com/vi/ZFJbHNd4PQA/mqdefault.jpg\",\n+|    contributors: {\n+|      song: {},\n+|      musicVideo: {},\n+|    },\n+|  },\n@@ main.js:29\n-|    artists: [\"\"],\n+|    artists: [\"ICHIBAN GIRLS\"],\n@@ main.js:31\n-|  coordinates: [0, 0],\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n-|  image: \"https://i.ytimg.com/vi/youtube_id/mqdefault.jpg\",\n-|  contributors: {\n-|    song: {},\n-|    musicVideo: {},\n-|    optionalActions: [],\n-|  },\n-|},\n+|    coordinates: [22.2447932, 114.1772857],\n+|    name: \"旋轉木馬\",\n+|    streetView: \"https://maps.app.goo.gl/YxgsV5M24PVukb1w9\",\n+|    url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n+|    image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\",\n+|    contributors: {\n+|      song: {},\n+|      musicVideo: {},\n+|    },\n+|  },\n@@ main.js:30\n-|  address: \"\",\n+|    address: \"Ocean Park Merry-Go-Round, Hong Kong Island, Hong Kong\","
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": ""
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 18,
+          "endLine": 18
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  address: \"Tai On Coffee & Tea Shop, Yau Ma Tei, Kowloon, Hong Kong\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 20,
+          "endLine": 22
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  name: \"復古是我太念舊 (Vintage Limited Edition) (zh)\",\n  streetView: \"https://maps.app.goo.gl/RUTncvojN8idtqmt6\",\n  url: \"https://youtu.be/ZFJbHNd4PQA?t=183\","
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 19,
+          "endLine": 19
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  coordinates: [22.313329, 114.168362],"
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 23,
+          "endLine": 23
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  image: \"https://i.ytimg.com/vi/ZFJbHNd4PQA/mqdefault.jpg\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 25,
+          "endLine": 25
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    song: {\n      composer: [\"Zpecial\"],\n      lyricist: [\"Zpecial\"],\n      arranger: [\"Zpecial\"],\n      producer: [\"Zpecial\"],\n    },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:17\n-|  address: \"\",\n+|  address: \"Tai On Coffee & Tea Shop, Yau Ma Tei, Kowloon, Hong Kong\",\n@@ main.js:19\n-|  name: \"\",\n-|  streetView: \"\",\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n+|  name: \"復古是我太念舊 (Vintage Limited Edition) (zh)\",\n+|  streetView: \"https://maps.app.goo.gl/RUTncvojN8idtqmt6\",\n+|  url: \"https://youtu.be/ZFJbHNd4PQA?t=183\",\n@@ main.js:18\n-|  coordinates: [0, 0],\n+|  coordinates: [22.313329, 114.168362],\n@@ main.js:22\n-|  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\",\n+|  image: \"https://i.ytimg.com/vi/ZFJbHNd4PQA/mqdefault.jpg\",\n@@ main.js:24\n-|    song: {},\n+|    song: {\n+|      composer: [\"Zpecial\"],\n+|      lyricist: [\"Zpecial\"],\n+|      arranger: [\"Zpecial\"],\n+|      producer: [\"Zpecial\"],\n+|    },"
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 20,
+          "endLine": 20
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  name: \"復古是我太念舊 (Vintage Limited Edition) (zh)\","
+      },
+      {
+        "doneEdit": true
+      },
+      {},
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 18,
+          "endLine": 18
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  address: \"Tai On Coffee & Tea Shop, Yau Ma Tei, Kowloon, Hong Kong\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 19,
+          "endLine": 19
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  coordinates: [22.313329, 114.168362],"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 21,
+          "endLine": 21
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  streetView: \"https://maps.app.goo.gl/RUTncvojN8idtqmt6\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 22,
+          "endLine": 22
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  url: \"https://youtu.be/ZFJbHNd4PQA?t=183\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 23,
+          "endLine": 23
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n  image: \"https://i.ytimg.com/vi/ZFJbHNd4PQA/mqdefault.jpg\","
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 25,
+          "endLine": 25
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    song: {\n      composer: [\"Zpecial\"],\n      lyricist: [\"Zpecial\"],\n      arranger: [\"Zpecial\"],\n      producer: [\"Zpecial\"],\n    },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:19\n-|  name: \"\",\n+|  name: \"復古是我太念舊 (Vintage Limited Edition) (zh)\",\n@@ main.js:17\n-|  address: \"\",\n+|  address: \"Tai On Coffee & Tea Shop, Yau Ma Tei, Kowloon, Hong Kong\",\n@@ main.js:18\n-|  coordinates: [0, 0],\n+|  coordinates: [22.313329, 114.168362],\n@@ main.js:20\n-|  streetView: \"\",\n+|  streetView: \"https://maps.app.goo.gl/RUTncvojN8idtqmt6\",\n@@ main.js:21\n-|  url: \"https://youtu.be/YjKifCk-RU0?t=84\",\n+|  url: \"https://youtu.be/ZFJbHNd4PQA?t=183\",\n@@ main.js:22\n-|  image: \"https://i.ytimg.com/vi/YjKifCk-RU0/mqdefault.jpg\",\n+|  image: \"https://i.ytimg.com/vi/ZFJbHNd4PQA/mqdefault.jpg\",\n@@ main.js:24\n-|    song: {},\n+|    song: {\n+|      composer: [\"Zpecial\"],\n+|      lyricist: [\"Zpecial\"],\n+|      arranger: [\"Zpecial\"],\n+|      producer: [\"Zpecial\"],\n+|    },"
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 25,
+          "endLine": 25
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    song: {\n      composer: [\"康聰@Zpecial\"],\n      lyricist: [\"T-Rexx\"],\n      arranger: [\"Zpecial\", \"賴映彤\"],\n      producer: [\"賴映彤\"],\n      keysSynthsProgramming: [\"SiuTung\"],\n      drums: [\"Waiyin@Zpecial\"],\n      drumsRecordedBy: [\"Kai\"],\n    },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 34,
+          "endLine": 34
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    musicVideo: {\n      director: [\"Howard Lui\"],\n      producer: [\"Wesley Wong\"],\n      directorOfPhotography: [\"Godfrey Lai\"],\n      bestBoy: [\"So Hei Ping\"],\n      artDirector: [\"Sammy Yeung\"],\n      editor: [\"Howard Lui\"],\n      vfxArtist: [\"Howard Lui\"],\n    },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "beginEdit": true
+      },
+      {
+        "rangeToReplace": {
+          "startLine": 43,
+          "endLine": 43
+        },
+        "shouldRemoveLeadingEol": true
+      },
+      {
+        "text": "\n    optionalActions: [],\n  },"
+      },
+      {
+        "doneEdit": true
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": "@@ main.js:24\n-|    song: {},\n+|    song: {\n+|      composer: [\"康聰@Zpecial\"],\n+|      lyricist: [\"T-Rexx\"],\n+|      arranger: [\"Zpecial\", \"賴映彤\"],\n+|      producer: [\"賴映彤\"],\n+|      keysSynthsProgramming: [\"SiuTung\"],\n+|      drums: [\"Waiyin@Zpecial\"],\n+|      drumsRecordedBy: [\"Kai\"],\n+|    },\n@@ main.js:33\n-|    musicVideo: {},\n+|    musicVideo: {\n+|      director: [\"Howard Lui\"],\n+|      producer: [\"Wesley Wong\"],\n+|      directorOfPhotography: [\"Godfrey Lai\"],\n+|      bestBoy: [\"So Hei Ping\"],\n+|      artDirector: [\"Sammy Yeung\"],\n+|      editor: [\"Howard Lui\"],\n+|      vfxArtist: [\"Howard Lui\"],\n+|    },\n@@ main.js:42\n-|  },\n+|    optionalActions: [],\n+|  },"
+  },
+  {
+    "messages": [
+      {
+        "modelInfo": {
+          "isFusedCursorPredictionModel": true,
+          "isMultidiffModel": true
+        }
+      },
+      {
+        "doneStream": true
+      },
+      {
+        "doneStream": true
+      }
+    ],
+    "diff": ""
+  }
+]

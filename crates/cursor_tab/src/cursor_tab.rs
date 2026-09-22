@@ -314,6 +314,7 @@ struct CursorTabCompletion {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct CursorTabStream {
+    is_multidiff_model: bool,
     edits: Vec<CursorTabCompletion>,
     cursor_prediction_target: Option<CursorPredictionTarget>,
 }
@@ -384,6 +385,7 @@ impl StreamAccumulator {
     fn finish(mut self) -> CursorTabStream {
         self.finish_current();
         CursorTabStream {
+            is_multidiff_model: self.is_multidiff_model == Some(true),
             edits: self.edits,
             cursor_prediction_target: self.cursor_prediction_target,
         }
@@ -689,14 +691,173 @@ fn map_cursor_target(
     })
 }
 
+fn apply_multidiff_stream(stream: &CursorTabStream, contents: &str) -> Result<String> {
+    let mut updated = contents.to_owned();
+    // Multidiff ranges refer to the result of all preceding edits, including
+    // edits that change the line count or revisit an earlier rewrite window.
+    for edit in &stream.edits {
+        let range = edit
+            .range
+            .context("Cursor Tab multidiff edit has no range")?;
+        anyhow::ensure!(
+            range.start_line > 0 && range.end_line >= range.start_line - 1,
+            "invalid Cursor Tab multidiff line range: {range:?}"
+        );
+        let starts: Vec<_> = std::iter::once(0)
+            .chain(updated.match_indices('\n').map(|(offset, _)| offset + 1))
+            .collect();
+        let start_row = usize::try_from(range.start_line - 1)?;
+        let end_row = usize::try_from(range.end_line)?;
+        let insertion = start_row == end_row;
+        let mut start = starts
+            .get(start_row)
+            .copied()
+            .or_else(|| (insertion && start_row == starts.len()).then_some(updated.len()))
+            .context("Cursor Tab multidiff starts beyond the document")?;
+        anyhow::ensure!(
+            end_row <= starts.len(),
+            "Cursor Tab multidiff ends beyond the document"
+        );
+        let mut replacement = edit.text.clone();
+        let end = if insertion {
+            if !replacement.is_empty() {
+                if start_row == starts.len() {
+                    replacement.insert(0, '\n');
+                } else {
+                    replacement.push('\n');
+                }
+            }
+            start
+        } else if replacement.is_empty() {
+            if end_row == starts.len() && start > 0 {
+                start -= 1;
+            }
+            starts.get(end_row).copied().unwrap_or(updated.len())
+        } else {
+            starts
+                .get(end_row)
+                .map(|offset| offset - 1)
+                .unwrap_or(updated.len())
+        };
+        updated.replace_range(start..end, &replacement);
+    }
+    Ok(updated)
+}
+
+fn multidiff_edits(contents: &str, updated: &str) -> Vec<(Range<usize>, Arc<str>)> {
+    // Restrict tokenization to the changed window: a one-character completion
+    // near the end of a large file should not diff every unchanged line.
+    let prefix = contents
+        .chars()
+        .zip(updated.chars())
+        .take_while(|(left, right)| left == right)
+        .map(|(character, _)| character.len_utf8())
+        .sum::<usize>();
+    let suffix = contents[prefix..]
+        .chars()
+        .rev()
+        .zip(updated[prefix..].chars().rev())
+        .take_while(|(left, right)| left == right)
+        .map(|(character, _)| character.len_utf8())
+        .sum::<usize>();
+    language::text_diff(
+        &contents[prefix..contents.len() - suffix],
+        &updated[prefix..updated.len() - suffix],
+    )
+    .into_iter()
+    .map(|(range, text)| (range.start + prefix..range.end + prefix, text))
+    .collect()
+}
+
+fn cursor_local_multidiff_edits(
+    stream: &CursorTabStream,
+    contents: &str,
+    cursor_offset: usize,
+) -> Result<Vec<(Range<usize>, Arc<str>)>> {
+    let mut updated = contents.to_owned();
+    let mut previous_changes: Vec<(Range<usize>, usize)> = Vec::new();
+    let mut nearest: Option<(usize, Range<usize>, Arc<str>)> = None;
+    for edit in &stream.edits {
+        let next = apply_multidiff_stream(
+            &CursorTabStream {
+                is_multidiff_model: true,
+                edits: vec![edit.clone()],
+                ..Default::default()
+            },
+            &updated,
+        )?;
+        let changes = multidiff_edits(&updated, &next);
+        for (range, text) in &changes {
+            let mut original_range = range.clone();
+            let mut independent = true;
+            // Response coordinates move as earlier predictions add/remove text.
+            // Only offer changes that can be mapped back to the actual buffer;
+            // changes inside unaccepted replacement text need a fresh prediction.
+            for (previous, inserted_length) in previous_changes.iter().rev() {
+                let inserted_end = previous.start + inserted_length;
+                if original_range.end <= previous.start {
+                    continue;
+                }
+                if original_range.start >= inserted_end {
+                    original_range = (previous.end + original_range.start - inserted_end)
+                        ..(previous.end + original_range.end - inserted_end);
+                } else {
+                    independent = false;
+                    break;
+                }
+            }
+            if !independent {
+                continue;
+            }
+            let distance = original_range.start.saturating_sub(cursor_offset)
+                + cursor_offset.saturating_sub(original_range.end);
+            if nearest.as_ref().is_none_or(|(best, _, _)| distance < *best) {
+                nearest = Some((distance, original_range, text.clone()));
+            }
+        }
+        // Applying a batch from the end preserves its original byte coordinates.
+        previous_changes.extend(
+            changes
+                .into_iter()
+                .rev()
+                .map(|(range, text)| (range, text.len())),
+        );
+        updated = next;
+    }
+    Ok(nearest
+        .into_iter()
+        .map(|(_, range, text)| (range, text))
+        .collect())
+}
+
 fn prepared_edits_from_stream(
     stream: &mut CursorTabStream,
-    snapshot: &BufferSnapshot,
+    snapshot: &TextBufferSnapshot,
     cursor: PointUtf16,
     current_line_prefix: &str,
     contents: &str,
     cursor_at_end: bool,
 ) -> Result<Vec<(Range<PointUtf16>, String)>> {
+    if stream.is_multidiff_model {
+        let edits = cursor_local_multidiff_edits(stream, contents, cursor.to_offset(snapshot))?;
+        // Cursor targets from later predictions describe a hypothetical document,
+        // not the local edit being offered. Refresh after accepting that edit.
+        if !edits.is_empty() {
+            stream.cursor_prediction_target = None;
+            for edit in &mut stream.edits {
+                edit.cursor_prediction_target = None;
+            }
+        }
+        return Ok(edits
+            .into_iter()
+            .map(|(range, text)| {
+                (
+                    range.start.to_point_utf16(snapshot)..range.end.to_point_utf16(snapshot),
+                    text.to_string(),
+                )
+            })
+            .collect());
+    }
     let mut prepared = Vec::new();
     for edit in &mut stream.edits {
         edit.normalize_document_echo(contents, cursor_at_end);
@@ -1588,6 +1749,251 @@ impl EditPredictionDelegate for CursorTabEditPredictionDelegate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_multidiff_streams_match_debug_diffs() -> Result<()> {
+        let captures: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/official_streams.json"))?;
+        for capture in captures.as_array().context("missing captures")? {
+            let mut hunks: Vec<(usize, Vec<String>, Vec<String>)> = Vec::new();
+            for line in capture["diff"].as_str().context("missing diff")?.lines() {
+                if let Some(header) = line.strip_prefix("@@ main.js:") {
+                    hunks.push((header.parse()?, Vec::new(), Vec::new()));
+                } else if let Some((_, old, new)) = hunks.last_mut() {
+                    if let Some(line) = line.strip_prefix("-|") {
+                        old.push(line.to_owned());
+                    } else if let Some(line) = line.strip_prefix("+|") {
+                        new.push(line.to_owned());
+                    }
+                }
+            }
+            let mut original_lines = vec!["unchanged".to_owned(); 100];
+            for (start, old, new) in hunks.iter().rev() {
+                original_lines.splice(*start..start + new.len(), old.iter().cloned());
+            }
+            let original = original_lines.join("\n");
+            let mut expected_lines = original_lines;
+            for (start, old, new) in &hunks {
+                assert_eq!(&expected_lines[*start..start + old.len()], old);
+                expected_lines.splice(*start..start + old.len(), new.iter().cloned());
+            }
+            let mut frames = Vec::new();
+            for message in capture["messages"].as_array().context("missing messages")? {
+                let range = message
+                    .get("rangeToReplace")
+                    .map(|range| -> Result<_> {
+                        Ok(RangeToReplace {
+                            start_line: i32::try_from(
+                                range["startLine"].as_i64().context("missing start")?,
+                            )?,
+                            end_line: i32::try_from(
+                                range["endLine"].as_i64().context("missing end")?,
+                            )?,
+                            ..Default::default()
+                        })
+                    })
+                    .transpose()?;
+                frames.push(ConnectFrame::Message(Box::new(StreamCppResponse {
+                    model_info: message.get("modelInfo").map(|_| ModelInfo {
+                        is_fused_cursor_prediction_model: true,
+                        is_multidiff_model: true,
+                    }),
+                    range_to_replace: range,
+                    text: message["text"].as_str().unwrap_or_default().to_owned(),
+                    should_remove_leading_eol: message["shouldRemoveLeadingEol"].as_bool(),
+                    begin_edit: message["beginEdit"].as_bool(),
+                    done_edit: message["doneEdit"].as_bool(),
+                    done_stream: message["doneStream"].as_bool(),
+                    ..Default::default()
+                })));
+            }
+            let stream = accumulate_stream_frames(frames)?;
+            let updated = apply_multidiff_stream(&stream, &original)?;
+            assert_eq!(updated, expected_lines.join("\n"));
+            let mut replayed = original.clone();
+            for (range, text) in multidiff_edits(&original, &updated).into_iter().rev() {
+                replayed.replace_range(range, &text);
+            }
+            assert_eq!(replayed, updated);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepting_bracket_does_not_accept_later_rewrites_or_deletion() -> Result<()> {
+        let prefix = "// unchanged\n".repeat(15);
+        let fields = "  artists: [\"\"],\n".to_owned() + &"    field: {},\n".repeat(9);
+        let suffix = "  {\n".to_owned() + &"    contributor: [\"復古 🎵\"],\n".repeat(20);
+        let original = format!("{prefix}{fields}  }},\n{suffix}");
+        let mut stream = CursorTabStream {
+            is_multidiff_model: true,
+            edits: [
+                (26, 26, "  }, ]"),
+                (16, 16, "  [artists: [\"\"],"),
+                (27, 27, "  [{"),
+                (28, 47, ""),
+            ]
+            .into_iter()
+            .map(|(start_line, end_line, text)| CursorTabCompletion {
+                range: Some(RangeToReplace {
+                    start_line,
+                    end_line,
+                    ..Default::default()
+                }),
+                text: text.into(),
+                ..Default::default()
+            })
+            .collect(),
+            cursor_prediction_target: Some(CursorPredictionTarget {
+                relative_path: "main.js".into(),
+                line_number_one_indexed: 27,
+                should_retrigger_cpp: false,
+                ..Default::default()
+            }),
+        };
+        let mut buffer = language::TextBuffer::new(
+            Default::default(),
+            language::BufferId::new(1)?,
+            original.clone(),
+        );
+        let prepared = prepared_edits_from_stream(
+            &mut stream,
+            buffer.snapshot(),
+            PointUtf16::new(25, 4),
+            "  },",
+            &original,
+            false,
+        )?;
+        let edits = anchors_from_prepared_edits(buffer.snapshot(), &prepared);
+        let (range, text) = edits.first().context("missing bracket insertion")?;
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            range.start.to_offset(buffer.snapshot()),
+            range.end.to_offset(buffer.snapshot())
+        );
+        assert_eq!(text.as_ref(), " ]");
+        buffer.edit(edits.iter().cloned());
+        assert_eq!(
+            buffer.snapshot().text(),
+            format!("{prefix}{fields}  }}, ]\n{suffix}")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cursor_local_change_maps_back_after_earlier_line_insertion() -> Result<()> {
+        let original =
+            "header\nneighbor\ntarget\nartists: [\"Zpecial\"],\ncontributors: { song: {} }";
+        let cursor = "header\nneighbor\ntarget".len();
+        let stream = CursorTabStream {
+            is_multidiff_model: true,
+            edits: [(1, "header\nmore"), (4, "target},")]
+                .into_iter()
+                .map(|(line, text)| CursorTabCompletion {
+                    range: Some(RangeToReplace {
+                        start_line: line,
+                        end_line: line,
+                        ..Default::default()
+                    }),
+                    text: text.into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let edits = cursor_local_multidiff_edits(&stream, original, cursor)?;
+        assert_eq!(edits, vec![(cursor..cursor, Arc::from("},"))]);
+        let mut actual = original.to_owned();
+        for (range, text) in edits.into_iter().rev() {
+            actual.replace_range(range, &text);
+        }
+        assert_eq!(
+            actual,
+            "header\nneighbor\ntarget},\nartists: [\"Zpecial\"],\ncontributors: { song: {} }"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cursor_local_change_can_remove_text_at_cursor() -> Result<()> {
+        let original = "header\nvalue: [],,\nkeep: [\"復古 🎵\"],";
+        let cursor = "header\nvalue: [],,".len();
+        let stream = CursorTabStream {
+            is_multidiff_model: true,
+            edits: vec![CursorTabCompletion {
+                range: Some(RangeToReplace {
+                    start_line: 2,
+                    end_line: 2,
+                    ..Default::default()
+                }),
+                text: "value: [],".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            cursor_local_multidiff_edits(&stream, original, cursor)?,
+            vec![(cursor - 1..cursor, Arc::from(""))]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn multidiff_incremental_edit_in_large_unicode_file() {
+        let prefix = "unchanged 🎵\n".repeat(50_000);
+        let suffix = "\nunchanged 復古".repeat(50_000);
+        let original = format!("{prefix}artists: [\"Z\"],{suffix}");
+        let updated = format!("{prefix}artists: [\"Zpecial\"],{suffix}");
+        let edits = multidiff_edits(&original, &updated);
+        let offset = prefix.len() + "artists: [\"Z".len();
+        assert_eq!(edits, vec![(offset..offset, Arc::from("pecial"))]);
+    }
+
+    #[test]
+    fn multidiff_preserves_explicit_whitespace_and_line_boundaries() -> Result<()> {
+        for (original, start_line, end_line, text, expected) in [
+            ("one\ntwo", 2, 2, "", "one"),
+            ("one\ntwo", 1, 1, "", "two"),
+            ("one\ntwo", 1, 2, "", ""),
+            ("one\ntwo", 2, 1, "inserted", "one\ninserted\ntwo"),
+            ("one\ntwo", 3, 2, "inserted", "one\ntwo\ninserted"),
+            ("one\ntwo", 2, 2, "  \n    ", "one\n  \n    "),
+        ] {
+            let stream = CursorTabStream {
+                is_multidiff_model: true,
+                edits: vec![CursorTabCompletion {
+                    range: Some(RangeToReplace {
+                        start_line,
+                        end_line,
+                        ..Default::default()
+                    }),
+                    text: text.into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            assert_eq!(apply_multidiff_stream(&stream, original)?, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn multidiff_rejects_out_of_bounds_ranges() {
+        let stream = CursorTabStream {
+            is_multidiff_model: true,
+            edits: vec![CursorTabCompletion {
+                range: Some(RangeToReplace {
+                    start_line: 20,
+                    end_line: 20,
+                    ..Default::default()
+                }),
+                text: "replacement".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(apply_multidiff_stream(&stream, "one\ntwo").is_err());
+    }
 
     #[test]
     fn bracket_repairs_in_large_files_preserve_unchanged_objects() -> Result<()> {
